@@ -148,6 +148,10 @@ class HumanizeAI:
             text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
         return text
 
+    def humanize_literature_review(self, text: str) -> str:
+        """Entry point for literature-review prose; preserves paragraph boundaries."""
+        return self.humanize(text)
+
     def humanize(self, text: str) -> str:
         """Return a conservative academic-style revision."""
         if not text or not text.strip():
