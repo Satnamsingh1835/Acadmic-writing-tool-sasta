@@ -1,106 +1,183 @@
-# Academic Humanizer
+# Academic Literature Review Assistant
 
-A conservative Python toolkit for revising AI-assisted academic prose and diagnosing common literature-review structure signals. It is designed for authors who want language-level editing without outsourcing their argument.
+This project is now an **academic literature-review writing assistant**, not an AI detector or AI-detector bypass.
 
-## What it does
+It is designed for a researcher who is reading and drafting a literature review for a research proposal, dissertation, or PhD application. The system reads the writer's text, identifies possible grammar and academic-language problems, diagnoses paragraph-level literature-review structure, and produces a conservative refined version.
 
-### Language editing
+## What the assistant does
 
-- removes generic AI-style framing
-- reduces a small set of safe wordiness patterns
-- optionally softens selected categorical claims
-- supports British academic English
-- preserves paragraph boundaries and sentence order
-- protects URLs, DOIs, author-year citations and quoted text
-- does not add evidence, citations, interpretations or substantive claims
-- does not use fillers, emojis, rhetorical questions or random sentence reordering
+### Read your text
 
-### Literature-review diagnostics
+The API currently accepts UTF-8 .txt files and pasted text. It preserves paragraph and sentence order.
 
-- identifies likely sentence roles such as source/evidence, interpretation, synthesis, gap and author connection
-- flags possible overclaims and long sentences
-- detects common citation patterns and possible source claims without citations
-- identifies explicit synthesis signals such as comparison, contrast, qualification and temporal reconfiguration
-- flags possible multi-source listing when several studies appear without an explicit synthesis relationship
-- provides neutral editorial questions rather than scholarly quality scores
+### Grammar and academic-language review
 
-These diagnostics are heuristic. They are prompts for the writer's review, not an assessment of whether an argument is theoretically or empirically correct.
+It flags or edits:
 
-## Recommended workflow
+- formulaic academic phrasing;
+- selected wordiness;
+- long sentences;
+- repeated sentence openings;
+- selected categorical claims that deserve evidentiary checking;
+- British academic spelling;
+- possible source-based claims without a nearby citation.
 
-1. Draft the paragraph yourself.
-2. Run the `conservative` profile first.
-3. Compare the revised text with the original.
-4. Use `standard` when the prose contains unnecessary wordiness.
-5. Use `polish` only when you want the limited claim-softening pass.
-6. Run the academic and literature-review analysers.
-7. Manually verify every citation, conceptual term, substantive claim and interpretation.
-8. Use `language_only_diagnostics()` to check paragraph, sentence and citation preservation.
+These are editorial signals, not automatic declarations that a sentence is wrong.
 
-## Python usage
+### Literature-review reasoning
 
-### Humanize academic prose
+The analyser looks for the following possible functions:
 
-```python
-from humanize import HumanizeAI
+**source/evidence -> interpretation -> comparison/synthesis -> gap -> connection to the study**
 
-editor = HumanizeAI()
-revised = editor.humanize_literature_review(text)
-print(revised)
-```
+This is not a rigid template. A paragraph does not need every function in every case. Missing signals produce questions for the researcher rather than invented prose.
 
-### Use profiles
+It also looks for relationships between sources, including:
 
-```python
-from advanced_humanize import AdvancedHumanizer
+- agreement or extension;
+- contrast or tension;
+- qualification or conditionality;
+- temporal reconfiguration;
+- explicit debate language.
 
-editor = AdvancedHumanizer()
+### Conservative text refinement
 
-conservative = editor.humanize_literature_review(text, "conservative")
-standard = editor.humanize_literature_review(text, "standard")
-polish = editor.humanize_literature_review(text, "polish")
-```
+The editor can:
 
-`light`, `medium`, and `heavy` remain accepted as backwards-compatible aliases.
+- remove formulaic phrasing;
+- simplify selected wordiness;
+- use British English spelling;
+- optionally soften a small set of categorical expressions.
 
-### Analyse a literature review
+It does not invent citations, evidence, literature, interpretations, research findings, or theoretical arguments.
 
-```python
-from literature_review import LiteratureReviewAnalyzer
+## PhD-admission writing target
 
-analyzer = LiteratureReviewAnalyzer()
-report = analyzer.analyse(text)
-print(analyzer.summary(text))
-```
+The project is intended to help produce **clearer, more precise, evidence-conscious academic prose suitable for serious PhD proposal development**.
 
-### Check language-only safeguards
+It does not certify that a text is "PhD level". Admission quality depends on the substance of the research question, engagement with literature, theoretical reasoning, evidence, originality, feasibility, and disciplinary expectations. The tool therefore separates language refinement from scholarly judgement.
 
-```python
-from humanize import HumanizeAI
+## API
 
-editor = HumanizeAI()
-revised = editor.humanize_literature_review(text)
-print(editor.language_only_diagnostics(text, revised))
-```
+Install dependencies:
 
-## What it deliberately does not do
+    python -m pip install -r requirements.txt
 
-This project is not an AI-detector bypass, plagiarism tool, citation generator, source verifier or automatic scholarly-quality scorer. It does not determine whether an author's interpretation is correct. It only applies limited language transformations and reports heuristic signals for human review.
+Run the API:
 
-## Repository files
+    python -m uvicorn api:app --reload
 
-- `humanize.py` — core conservative academic editor and structural safeguards
-- `advanced_humanize.py` — conservative, standard and polish profiles
-- `academic_analyser.py` — sentence-level style, citation and literature-review signals
-- `literature_review.py` — paragraph-level flow and synthesis diagnostics
-- `test_academic_humanizer.py` — regression tests for the core editor and analyser
-- `test_literature_review.py` — regression tests for paragraph-level diagnostics
-- `test_example.py` — runnable demonstration
+The interactive API documentation is available from the running server at /docs.
 
-## Limitations
+### Health check
 
-Regex- and heuristic-based checks can miss context, misclassify sentences, or recognise a rhetorical signal where no genuine synthesis exists. Structural safeguards cannot prove semantic preservation. The author must make the final judgement about wording, evidence, interpretation and argument.
+    GET /health
 
-## Responsible use
+### Review pasted text
 
-The writer remains responsible for the argument, evidence, citations, interpretation and final wording. Compare revised text with the original before using it in a proposal, dissertation or publication.
+    POST /review
+
+Example JSON:
+
+    {
+      "text": "Jodhka (2004) examines caste and land relations. However, Gupta (2000) identifies regional variation.",
+      "profile": "standard",
+      "include_refined_text": true
+    }
+
+### Review a text file
+
+    POST /review/file
+
+Upload a UTF-8 .txt file as multipart form data.
+
+Profiles:
+
+- conservative — formulaic-phrase removal and British spelling;
+- standard — conservative editing plus selected wordiness reduction;
+- polish — standard editing plus limited claim softening.
+
+The response contains:
+
+- refined_text;
+- grammar_and_style;
+- literature_review;
+- safeguards.
+
+## Using it from R
+
+The API is intentionally HTTP-based so that an R workflow can call the same service.
+
+Example with httr2:
+
+    library(httr2)
+
+    text <- paste(readLines("proposal.txt", encoding = "UTF-8"), collapse = "\n")
+
+    result <- request("http://127.0.0.1:8000/review") |>
+      req_method("POST") |>
+      req_body_json(list(
+        text = text,
+        profile = "standard",
+        include_refined_text = TRUE
+      )) |>
+      req_perform() |>
+      resp_body_json()
+
+    cat(result$refined_text)
+
+For a file, use the /review/file endpoint with multipart upload.
+
+## Project architecture
+
+    text file / pasted text
+            |
+            v
+       API layer
+            |
+      +-----+-----+
+      |           |
+      v           v
+    language   literature-review
+     editor       analyser
+      |           |
+      +-----+-----+
+            |
+            v
+       review response
+       / refined text
+
+The current modules are:
+
+- humanize.py — conservative language editing and structural safeguards
+- advanced_humanize.py — editing profiles
+- academic_analyser.py — sentence-level grammar/style/citation signals
+- literature_review.py — paragraph-level literature-review diagnostics
+- api.py — HTTP API for R and other clients
+- test_academic_humanizer.py — core regression tests
+- test_literature_review.py — literature-review regression tests
+- proposal.md — project design and roadmap
+
+## What it is not
+
+This is not:
+
+- an AI detector;
+- an AI-detector bypass;
+- a plagiarism checker;
+- a citation generator;
+- a source verifier;
+- an automatic scholarly-quality scorer;
+- a system that fabricates literature-review arguments.
+
+The writer remains responsible for checking every substantive claim, citation, interpretation, conceptual distinction, and final revision.
+
+## Roadmap
+
+1. Stabilise the API and regression tests.
+2. Add DOCX and PDF text extraction.
+3. Return explicit sentence-level grammar suggestions with before/after explanations.
+4. Add paragraph-level revision prompts tied to the writer's own argument.
+5. Add an optional LLM-assisted refinement endpoint, clearly separated from deterministic editing.
+6. Add a small R client package/functions.
+7. Expand tests for citations, quotations, footnotes, headings, and multilingual text.
