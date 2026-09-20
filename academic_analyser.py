@@ -2,6 +2,9 @@
 
 This module does not rewrite text. It identifies patterns a writer may want
 to review before or after using the academic humanizer.
+
+The paragraph-structure diagnostics are deliberately heuristic. They flag
+places for human review rather than claiming to understand an argument.
 """
 
 from __future__ import annotations
@@ -58,6 +61,52 @@ class AcademicAnalyzer:
         "while",
     )
 
+    EVIDENCE_SIGNALS = (
+        "according to",
+        "finds",
+        "found",
+        "reports",
+        "reported",
+        "shows",
+        "showed",
+        "documents",
+        "documented",
+        "observes",
+        "observed",
+        "estimates",
+        "estimated",
+        "survey",
+        "interview",
+        "data",
+        "evidence",
+    )
+
+    EXPLANATION_SIGNALS = (
+        "this suggests",
+        "this indicates",
+        "this means",
+        "this demonstrates",
+        "this reveals",
+        "because",
+        "therefore",
+        "thus",
+        "hence",
+        "in other words",
+    )
+
+    LINK_SIGNALS = (
+        "however",
+        "whereas",
+        "although",
+        "by contrast",
+        "in contrast",
+        "similarly",
+        "likewise",
+        "building on",
+        "this also",
+        "at the same time",
+    )
+
     def __init__(self, long_sentence_words: int = 35) -> None:
         if long_sentence_words < 1:
             raise ValueError("long_sentence_words must be positive")
@@ -65,11 +114,24 @@ class AcademicAnalyzer:
 
     @staticmethod
     def _sentences(text: str) -> List[str]:
-        return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
+        return [
+            s.strip()
+            for s in re.split(r"(?<=[.!?])\s+", text.strip())
+            if s.strip()
+        ]
 
     @staticmethod
     def _words(text: str) -> List[str]:
         return re.findall(r"\b[\w'-]+\b", text.lower())
+
+    @staticmethod
+    def _contains_signal(sentence: str, signals: tuple[str, ...]) -> List[str]:
+        lower = sentence.lower()
+        return [
+            signal
+            for signal in signals
+            if re.search(r"\b" + re.escape(signal) + r"\b", lower)
+        ]
 
     def _formulaic(self, text: str) -> List[str]:
         lower = text.lower()
@@ -90,23 +152,85 @@ class AcademicAnalyzer:
 
     def _transition_count(self, text: str) -> int:
         lower = text.lower()
-        return sum(len(re.findall(r"\b" + re.escape(term) + r"\b", lower))
-                   for term in self.ARGUMENT_SIGNALS)
+        return sum(
+            len(re.findall(r"\b" + re.escape(term) + r"\b", lower))
+            for term in self.ARGUMENT_SIGNALS
+        )
 
     def _long_sentences(self, sentences: List[str]) -> List[Dict[str, object]]:
         result = []
         for index, sentence in enumerate(sentences, start=1):
             count = len(self._words(sentence))
             if count >= self.long_sentence_words:
-                result.append({"sentence": index, "words": count, "text": sentence})
+                result.append(
+                    {"sentence": index, "words": count, "text": sentence}
+                )
         return result
 
     def _argument_signals(self, text: str) -> List[str]:
         lower = text.lower()
         return [
-            term for term in self.ARGUMENT_SIGNALS
+            term
+            for term in self.ARGUMENT_SIGNALS
             if re.search(r"\b" + re.escape(term) + r"\b", lower)
         ]
+
+    def _paragraph_structure(self, sentences: List[str]) -> Dict[str, object]:
+        """Heuristically map sentences to claim/evidence/explanation/link roles."""
+        roles = []
+        for index, sentence in enumerate(sentences, start=1):
+            evidence = self._contains_signal(sentence, self.EVIDENCE_SIGNALS)
+            explanation = self._contains_signal(sentence, self.EXPLANATION_SIGNALS)
+            link = self._contains_signal(sentence, self.LINK_SIGNALS)
+            citation = bool(
+                re.search(r"\([^()]*\b(?:19|20)\d{2}[a-z]?\b[^()]*\)", sentence)
+            )
+
+            if evidence or citation:
+                role = "evidence"
+            elif explanation:
+                role = "explanation"
+            elif link:
+                role = "link"
+            else:
+                role = "claim_or_context"
+
+            roles.append(
+                {
+                    "sentence": index,
+                    "role": role,
+                    "signals": {
+                        "evidence": evidence,
+                        "explanation": explanation,
+                        "link": link,
+                        "citation": citation,
+                    },
+                    "text": sentence,
+                }
+            )
+
+        has_claim = any(item["role"] == "claim_or_context" for item in roles)
+        has_evidence = any(item["role"] == "evidence" for item in roles)
+        has_explanation = any(item["role"] == "explanation" for item in roles)
+
+        missing = []
+        if not has_claim:
+            missing.append("claim_or_context")
+        if not has_evidence:
+            missing.append("evidence")
+        if not has_explanation:
+            missing.append("explanation")
+
+        return {
+            "sentences": roles,
+            "has_claim_or_context": has_claim,
+            "has_evidence": has_evidence,
+            "has_explanation": has_explanation,
+            "has_link_signal": any(
+                item["signals"]["link"] for item in roles
+            ),
+            "possible_missing_roles": missing,
+        }
 
     def analyse(self, text: str) -> Dict[str, object]:
         """Return deterministic diagnostics without changing the input."""
@@ -115,6 +239,7 @@ class AcademicAnalyzer:
 
         sentences = self._sentences(text)
         words = self._words(text)
+        structure = self._paragraph_structure(sentences)
 
         return {
             "sentence_count": len(sentences),
@@ -125,7 +250,13 @@ class AcademicAnalyzer:
             "argument_signal_count": self._transition_count(text),
             "argument_signals_present": self._argument_signals(text),
             "long_sentences": self._long_sentences(sentences),
-            "citation_count": len(re.findall(r"\([^()]*\b(?:19|20)\d{2}[a-z]?\b[^()]*\)", text)),
+            "citation_count": len(
+                re.findall(
+                    r"\([^()]*\b(?:19|20)\d{2}[a-z]?\b[^()]*\)",
+                    text,
+                )
+            ),
+            "paragraph_structure": structure,
         }
 
     def summary(self, text: str) -> str:
@@ -137,11 +268,15 @@ class AcademicAnalyzer:
 
         if report["formulaic_phrases"]:
             messages.append(
-                "Formulaic phrases: " + ", ".join(report["formulaic_phrases"]) + "."
+                "Formulaic phrases: "
+                + ", ".join(report["formulaic_phrases"])
+                + "."
             )
         if report["possible_overclaims"]:
             messages.append(
-                "Possible overclaims: " + ", ".join(report["possible_overclaims"]) + "."
+                "Possible overclaims: "
+                + ", ".join(report["possible_overclaims"])
+                + "."
             )
         if report["repetitive_openings"]:
             messages.append(
@@ -158,6 +293,14 @@ class AcademicAnalyzer:
                 f"{self.long_sentence_words} words."
             )
 
+        missing = report["paragraph_structure"]["possible_missing_roles"]
+        if missing:
+            messages.append(
+                "Paragraph structure may need review: "
+                + ", ".join(missing)
+                + "."
+            )
+
         if len(messages) == 1:
             messages.append("No predefined warning patterns detected.")
 
@@ -166,8 +309,9 @@ class AcademicAnalyzer:
 
 if __name__ == "__main__":
     sample = (
-        "It is important to note that caste relations play a crucial role in "
-        "agrarian change. However, this argument should be examined carefully."
+        "Caste structures access to land (Jodhka, 2004). "
+        "This suggests that land relations cannot be separated from caste. "
+        "However, the relationship varies across regions."
     )
     analyzer = AcademicAnalyzer()
     print(analyzer.summary(sample))
