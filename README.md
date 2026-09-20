@@ -1,45 +1,55 @@
 # Academic Humanizer
 
-A conservative Python tool for revising AI-assisted academic prose, with a specific workflow for literature reviews.
+A conservative Python toolkit for revising AI-assisted academic prose and diagnosing common literature-review structure signals. It is designed for authors who want language-level editing without outsourcing their argument.
 
 ## What it does
 
-- removes generic AI-style framing without rewriting the argument
-- reduces safe forms of wordiness
-- preserves paragraph boundaries
-- protects URLs, DOIs, parenthetical citations and quotations
-- optionally softens a small set of categorical claims
+### Language editing
+
+- removes generic AI-style framing
+- reduces a small set of safe wordiness patterns
+- optionally softens selected categorical claims
 - supports British academic English
-- never adds fillers, emojis, fake personal opinions or rhetorical questions
-- never randomly reorders sentences
-- does not invent evidence, citations or interpretations
+- preserves paragraph boundaries and sentence order
+- protects URLs, DOIs, author-year citations and quoted text
+- does not add evidence, citations, interpretations or substantive claims
+- does not use fillers, emojis, rhetorical questions or random sentence reordering
 
-## Literature-review workflow
+### Literature-review diagnostics
 
-The intended workflow is:
+- identifies likely sentence roles such as source/evidence, interpretation, synthesis, gap and author connection
+- flags possible overclaims and long sentences
+- detects common citation patterns and possible source claims without citations
+- identifies explicit synthesis signals such as comparison, contrast, qualification and temporal reconfiguration
+- flags possible multi-source listing when several studies appear without an explicit synthesis relationship
+- provides neutral editorial questions rather than scholarly quality scores
+
+These diagnostics are heuristic. They are prompts for the writer's review, not an assessment of whether an argument is theoretically or empirically correct.
+
+## Recommended workflow
 
 1. Draft the paragraph yourself.
-2. Run the conservative profile first.
-3. Compare the output with your original.
-4. Use standard only when the prose is unnecessarily formulaic or wordy.
-5. Use polish only for a final language pass.
-6. Manually check every citation, conceptual term and substantive claim.
-
-The tool is a writing aid, not an authorship or source-checking system.
+2. Run the `conservative` profile first.
+3. Compare the revised text with the original.
+4. Use `standard` when the prose contains unnecessary wordiness.
+5. Use `polish` only when you want the limited claim-softening pass.
+6. Run the academic and literature-review analysers.
+7. Manually verify every citation, conceptual term, substantive claim and interpretation.
+8. Use `language_only_diagnostics()` to check paragraph, sentence and citation preservation.
 
 ## Python usage
 
-Basic:
+### Humanize academic prose
 
 ```python
 from humanize import HumanizeAI
 
 editor = HumanizeAI()
-result = editor.humanize_literature_review(text)
-print(result)
+revised = editor.humanize_literature_review(text)
+print(revised)
 ```
 
-Profiles:
+### Use profiles
 
 ```python
 from advanced_humanize import AdvancedHumanizer
@@ -51,27 +61,46 @@ standard = editor.humanize_literature_review(text, "standard")
 polish = editor.humanize_literature_review(text, "polish")
 ```
 
-The older names `light`, `medium`, and `heavy` are still accepted as aliases.
+`light`, `medium`, and `heavy` remain accepted as backwards-compatible aliases.
+
+### Analyse a literature review
+
+```python
+from literature_review import LiteratureReviewAnalyzer
+
+analyzer = LiteratureReviewAnalyzer()
+report = analyzer.analyse(text)
+print(analyzer.summary(text))
+```
+
+### Check language-only safeguards
+
+```python
+from humanize import HumanizeAI
+
+editor = HumanizeAI()
+revised = editor.humanize_literature_review(text)
+print(editor.language_only_diagnostics(text, revised))
+```
 
 ## What it deliberately does not do
 
-This project does not try to make academic prose artificially conversational or to bypass AI-detection systems. Its purpose is to help an author remove formulaic language while retaining the author's argument, evidence, concepts and scholarly register.
+This project is not an AI-detector bypass, plagiarism tool, citation generator, source verifier or automatic scholarly-quality scorer. It does not determine whether an author's interpretation is correct. It only applies limited language transformations and reports heuristic signals for human review.
 
 ## Repository files
 
-- `humanize.py` — core conservative academic editor.
-- `advanced_humanize.py` — literature-review profiles.
-- `academic_analyser.py` — diagnostic checks for formulaic language, possible overclaims, repeated openings, long sentences, citations and paragraph structure.
-- `test_academic_humanizer.py` — regression tests.
+- `humanize.py` — core conservative academic editor and structural safeguards
+- `advanced_humanize.py` — conservative, standard and polish profiles
+- `academic_analyser.py` — sentence-level style, citation and literature-review signals
+- `literature_review.py` — paragraph-level flow and synthesis diagnostics
+- `test_academic_humanizer.py` — regression tests for the core editor and analyser
+- `test_literature_review.py` — regression tests for paragraph-level diagnostics
+- `test_example.py` — runnable demonstration
 
-## Example for a literature review
+## Limitations
 
-Input:
-
-> It is important to note that caste plays a crucial role in shaping agrarian relations. Furthermore, the relationship is multifaceted due to the fact that land relations vary across regions.
-
-The standard profile is intended to produce more direct academic prose while leaving the substantive argument for the author to verify.
+Regex- and heuristic-based checks can miss context, misclassify sentences, or recognise a rhetorical signal where no genuine synthesis exists. Structural safeguards cannot prove semantic preservation. The author must make the final judgement about wording, evidence, interpretation and argument.
 
 ## Responsible use
 
-The writer remains responsible for the argument, evidence, citations, interpretation and final wording. Always compare the revised version with the original before using it in a proposal, dissertation or publication.
+The writer remains responsible for the argument, evidence, citations, interpretation and final wording. Compare revised text with the original before using it in a proposal, dissertation or publication.
