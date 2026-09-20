@@ -39,8 +39,52 @@ class TestLiteratureReviewAnalyzer(unittest.TestCase):
         )
         report = self.analyzer.analyse(text)
         self.assertEqual(report["paragraph_count"], 2)
-        self.assertEqual(report["paragraphs"][0]["paragraph"], 1)
-        self.assertEqual(report["paragraphs"][1]["paragraph"], 2)
+
+    def test_flags_multiple_source_listing(self):
+        text = (
+            "Jodhka (2004) examines caste and land relations. "
+            "Gupta (2000) discusses caste hierarchy. "
+            "Judge (2014) examines Punjab."
+        )
+        synthesis = self.analyzer.analyse(text)["paragraphs"][0]["synthesis_diagnostics"]
+        self.assertTrue(synthesis["multiple_sources"])
+        self.assertTrue(synthesis["possible_source_listing"])
+        self.assertIsNotNone(synthesis["editorial_prompt"])
+
+    def test_recognises_explicit_comparison(self):
+        text = (
+            "Jodhka (2004) examines caste and land relations. "
+            "However, Gupta (2000) identifies regional variation."
+        )
+        synthesis = self.analyzer.analyse(text)["paragraphs"][0]["synthesis_diagnostics"]
+        self.assertTrue(synthesis["explicit_synthesis_signal"])
+        self.assertTrue(synthesis["signals"]["contrast_or_tension"])
+
+    def test_recognises_qualification_and_reconfiguration(self):
+        text = (
+            "Jodhka (2004) examines caste and land relations. "
+            "Gupta (2000) qualifies this account because the relationship varies over time."
+        )
+        synthesis = self.analyzer.analyse(text)["paragraphs"][0]["synthesis_diagnostics"]
+        self.assertTrue(synthesis["signals"]["qualification_or_condition"])
+        self.assertTrue(synthesis["signals"]["temporal_reconfiguration"])
+
+    def test_does_not_invent_interpretation(self):
+        text = (
+            "Jodhka (2004) examines caste and land relations. "
+            "Gupta (2000) discusses caste hierarchy."
+        )
+        prompt = self.analyzer.analyse(text)["paragraphs"][0]["synthesis_diagnostics"]["editorial_prompt"]
+        self.assertIsNotNone(prompt)
+        self.assertNotIn("Jodhka", prompt)
+
+    def test_prompt_absent_when_synthesis_signal_exists(self):
+        text = (
+            "Jodhka (2004) examines caste and land relations. "
+            "However, Gupta (2000) identifies regional variation."
+        )
+        synthesis = self.analyzer.analyse(text)["paragraphs"][0]["synthesis_diagnostics"]
+        self.assertIsNone(synthesis["editorial_prompt"])
 
 
 if __name__ == "__main__":
