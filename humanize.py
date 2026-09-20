@@ -114,17 +114,13 @@ class HumanizeAI:
 
     @staticmethod
     def language_only_diagnostics(original: str, revised: str) -> dict:
-        """Check structural invariants after a language-only edit.
-
-        These checks cannot prove that meaning is unchanged; they identify
-        structural changes that require manual review.
-        """
+        """Check structural invariants after a language-only edit."""
         sentence_count = lambda value: len(HumanizeAI._sentences(value))
         paragraph_count = lambda value: len(
-            [p for p in re.split(r"\\n\\s*\\n+", value.strip()) if p.strip()]
+            [p for p in re.split(r"\n\s*\n+", value.strip()) if p.strip()]
         )
         citations = lambda value: re.findall(
-            r"\\([^()]{0,120}\\b(?:19|20)\\d{2}[a-z]?\\b[^()]{0,120}\\)",
+            r"\([^()]{0,120}\b(?:19|20)\d{2}[a-z]?\b[^()]{0,120}\)",
             value,
         )
         return {
@@ -160,12 +156,3 @@ class HumanizeAI:
             revised.append(paragraph)
 
         return self._restore("\n\n".join(revised).strip(), protected)
-
-
-if __name__ == "__main__":
-    example = (
-        "It is important to note that caste plays a crucial role in shaping "
-        "agrarian relations. Furthermore, this relationship is complex due to "
-        "the fact that land relations change over time."
-    )
-    print(HumanizeAI().humanize(example))
