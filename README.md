@@ -100,6 +100,7 @@ Profiles:
 The response contains:
 
 - refined_text;
+- suggestions — sentence-level issue, explanation, suggested revision, and confidence;
 - grammar_and_style;
 - literature_review;
 - safeguards.
@@ -152,8 +153,10 @@ The current modules are:
 - humanize.py — conservative language editing and structural safeguards
 - advanced_humanize.py — editing profiles
 - academic_analyser.py — sentence-level grammar/style/citation signals
+- academic_suggestions.py — explainable sentence-level suggestions
 - literature_review.py — paragraph-level literature-review diagnostics
 - api.py — HTTP API for R and other clients
+- test_api.py — API regression tests
 - test_academic_humanizer.py — core regression tests
 - test_literature_review.py — literature-review regression tests
 - proposal.md — project design and roadmap
@@ -174,10 +177,10 @@ The writer remains responsible for checking every substantive claim, citation, i
 
 ## Roadmap
 
-1. Stabilise the API and regression tests.
-2. Add DOCX and PDF text extraction.
-3. Return explicit sentence-level grammar suggestions with before/after explanations.
-4. Add paragraph-level revision prompts tied to the writer's own argument.
+1. Stabilise the API and regression tests. ✓
+2. Return explicit sentence-level grammar/style suggestions with before/after explanations. ✓
+3. Add paragraph-level revision prompts tied to the writer's own argument.
+4. Add DOCX and PDF text extraction.
 5. Add an optional LLM-assisted refinement endpoint, clearly separated from deterministic editing.
 6. Add a small R client package/functions.
 7. Expand tests for citations, quotations, footnotes, headings, and multilingual text.
