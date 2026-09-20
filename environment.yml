@@ -7,3 +7,5 @@ channels:
 dependencies:
   - python=3.10
   - pip
+
+# CI environment definition
