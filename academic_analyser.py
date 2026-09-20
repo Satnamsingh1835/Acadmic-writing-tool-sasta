@@ -1,110 +1,47 @@
-"""Diagnostic analysis for academic prose.
+"""Diagnostics for literature-review argument structure.
 
-This module does not rewrite text. It identifies patterns a writer may want
-to review before or after using the academic humanizer.
-
-The paragraph-structure diagnostics are deliberately heuristic. They flag
-places for human review rather than claiming to understand an argument.
+The analyzer is heuristic. It identifies patterns for human review; it does not
+claim to understand or evaluate the author's scholarship.
 """
-
-from __future__ import annotations
-
 import re
 from collections import Counter
 from typing import Dict, List
 
 
 class AcademicAnalyzer:
-    """Conservative, deterministic diagnostics for academic paragraphs."""
+    """Analyse prose for literature-review structure and style signals."""
 
     FORMULAIC = (
-        "it is important to note that",
-        "it is worth noting that",
-        "it should be noted that",
-        "in today's world",
-        "in the modern era",
-        "in the realm of",
-        "a wide range of",
-        "a plethora of",
-        "plays a crucial role in",
-        "plays a vital role in",
-        "delve into",
-        "delves into",
-        "deep dive into",
-        "shed light on",
+        "it is important to note that", "it is worth noting that",
+        "it should be noted that", "in today's world", "in the modern era",
+        "in the realm of", "a plethora of", "plays a crucial role in",
+        "plays a vital role in", "delve into", "deep dive into", "shed light on",
     )
-
     ABSOLUTES = (
-        "always",
-        "never",
-        "proves that",
-        "clearly demonstrates",
-        "definitively shows",
-        "undeniable",
-        "unquestionably",
+        "always", "never", "proves that", "clearly demonstrates",
+        "definitively shows", "undeniable", "unquestionably",
     )
-
-    ARGUMENT_SIGNALS = (
-        "however",
-        "although",
-        "whereas",
-        "because",
-        "therefore",
-        "thus",
-        "hence",
-        "suggests",
-        "indicates",
-        "argues",
-        "demonstrates",
-        "shows",
-        "implies",
-        "while",
+    COMPARISON = (
+        "however", "whereas", "although", "by contrast", "in contrast",
+        "similarly", "likewise", "unlike", "while", "yet",
     )
-
-    EVIDENCE_SIGNALS = (
-        "according to",
-        "finds",
-        "found",
-        "reports",
-        "reported",
-        "shows",
-        "showed",
-        "documents",
-        "documented",
-        "observes",
-        "observed",
-        "estimates",
-        "estimated",
-        "survey",
-        "interview",
-        "data",
-        "evidence",
+    EVIDENCE = (
+        "according to", "finds", "found", "reports", "reported", "documents",
+        "documented", "observes", "observed", "estimates", "estimated",
+        "survey", "interview", "data", "evidence",
     )
-
-    EXPLANATION_SIGNALS = (
-        "this suggests",
-        "this indicates",
-        "this means",
-        "this demonstrates",
-        "this reveals",
-        "because",
-        "therefore",
-        "thus",
-        "hence",
-        "in other words",
+    INTERPRETATION = (
+        "this suggests", "this indicates", "this means", "this demonstrates",
+        "this reveals", "therefore", "thus", "hence", "because",
     )
-
-    LINK_SIGNALS = (
-        "however",
-        "whereas",
-        "although",
-        "by contrast",
-        "in contrast",
-        "similarly",
-        "likewise",
-        "building on",
-        "this also",
-        "at the same time",
+    GAP = (
+        "however, few", "however, little", "remains unclear", "remains underexplored",
+        "limited attention", "little attention", "has not examined",
+        "has received little", "gap in the literature", "underexplored",
+    )
+    CONTRIBUTION = (
+        "this study", "this research", "the present study", "this paper",
+        "this article", "i argue", "i examine", "i explore",
     )
 
     def __init__(self, long_sentence_words: int = 35) -> None:
@@ -114,204 +51,125 @@ class AcademicAnalyzer:
 
     @staticmethod
     def _sentences(text: str) -> List[str]:
-        return [
-            s.strip()
-            for s in re.split(r"(?<=[.!?])\s+", text.strip())
-            if s.strip()
-        ]
+        return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
 
     @staticmethod
     def _words(text: str) -> List[str]:
         return re.findall(r"\b[\w'-]+\b", text.lower())
 
     @staticmethod
-    def _contains_signal(sentence: str, signals: tuple[str, ...]) -> List[str]:
+    def _contains(sentence: str, signals: tuple[str, ...]) -> List[str]:
         lower = sentence.lower()
-        return [
-            signal
-            for signal in signals
-            if re.search(r"\b" + re.escape(signal) + r"\b", lower)
-        ]
+        return [s for s in signals if re.search(r"\b" + re.escape(s) + r"\b", lower)]
 
-    def _formulaic(self, text: str) -> List[str]:
-        lower = text.lower()
-        return [phrase for phrase in self.FORMULAIC if phrase in lower]
-
-    def _overclaims(self, text: str) -> List[str]:
-        lower = text.lower()
-        return [phrase for phrase in self.ABSOLUTES if phrase in lower]
+    def _citation_count(self, text: str) -> int:
+        return len(re.findall(r"\([^()]*\b(?:19|20)\d{2}[a-z]?\b[^()]*\)", text))
 
     def _repetitive_openings(self, sentences: List[str]) -> Dict[str, int]:
         openings = []
-        for sentence in sentences:
-            words = self._words(sentence)
+        for s in sentences:
+            words = self._words(s)
             if words:
                 openings.append(" ".join(words[:2]))
         counts = Counter(openings)
-        return {opening: count for opening, count in counts.items() if count > 1}
+        return {k: v for k, v in counts.items() if v > 1}
 
-    def _transition_count(self, text: str) -> int:
-        lower = text.lower()
-        return sum(
-            len(re.findall(r"\b" + re.escape(term) + r"\b", lower))
-            for term in self.ARGUMENT_SIGNALS
-        )
-
-    def _long_sentences(self, sentences: List[str]) -> List[Dict[str, object]]:
-        result = []
-        for index, sentence in enumerate(sentences, start=1):
-            count = len(self._words(sentence))
-            if count >= self.long_sentence_words:
-                result.append(
-                    {"sentence": index, "words": count, "text": sentence}
-                )
-        return result
-
-    def _argument_signals(self, text: str) -> List[str]:
-        lower = text.lower()
-        return [
-            term
-            for term in self.ARGUMENT_SIGNALS
-            if re.search(r"\b" + re.escape(term) + r"\b", lower)
-        ]
-
-    def _paragraph_structure(self, sentences: List[str]) -> Dict[str, object]:
-        """Heuristically map sentences to claim/evidence/explanation/link roles."""
+    def _roles(self, sentences: List[str]) -> List[Dict[str, object]]:
         roles = []
-        for index, sentence in enumerate(sentences, start=1):
-            evidence = self._contains_signal(sentence, self.EVIDENCE_SIGNALS)
-            explanation = self._contains_signal(sentence, self.EXPLANATION_SIGNALS)
-            link = self._contains_signal(sentence, self.LINK_SIGNALS)
-            citation = bool(
-                re.search(r"\([^()]*\b(?:19|20)\d{2}[a-z]?\b[^()]*\)", sentence)
-            )
+        for i, sentence in enumerate(sentences, 1):
+            citation = bool(re.search(r"\([^()]*\b(?:19|20)\d{2}[a-z]?\b[^()]*\)", sentence))
+            evidence = self._contains(sentence, self.EVIDENCE)
+            interpretation = self._contains(sentence, self.INTERPRETATION)
+            comparison = self._contains(sentence, self.COMPARISON)
+            gap = self._contains(sentence, self.GAP)
+            contribution = self._contains(sentence, self.CONTRIBUTION)
 
-            if evidence or citation:
-                role = "evidence"
-            elif explanation:
-                role = "explanation"
-            elif link:
-                role = "link"
+            if gap:
+                role = "gap"
+            elif comparison:
+                role = "comparison_or_synthesis"
+            elif evidence or citation:
+                role = "source_or_evidence"
+            elif interpretation:
+                role = "interpretation"
+            elif contribution:
+                role = "author_position"
             else:
                 role = "claim_or_context"
 
-            roles.append(
-                {
-                    "sentence": index,
-                    "role": role,
-                    "signals": {
-                        "evidence": evidence,
-                        "explanation": explanation,
-                        "link": link,
-                        "citation": citation,
-                    },
-                    "text": sentence,
-                }
-            )
-
-        has_claim = any(item["role"] == "claim_or_context" for item in roles)
-        has_evidence = any(item["role"] == "evidence" for item in roles)
-        has_explanation = any(item["role"] == "explanation" for item in roles)
-
-        missing = []
-        if not has_claim:
-            missing.append("claim_or_context")
-        if not has_evidence:
-            missing.append("evidence")
-        if not has_explanation:
-            missing.append("explanation")
-
-        return {
-            "sentences": roles,
-            "has_claim_or_context": has_claim,
-            "has_evidence": has_evidence,
-            "has_explanation": has_explanation,
-            "has_link_signal": any(
-                item["signals"]["link"] for item in roles
-            ),
-            "possible_missing_roles": missing,
-        }
+            roles.append({
+                "sentence": i,
+                "role": role,
+                "signals": {
+                    "citation": citation,
+                    "evidence": evidence,
+                    "interpretation": interpretation,
+                    "comparison": comparison,
+                    "gap": gap,
+                    "contribution": contribution,
+                },
+                "text": sentence,
+            })
+        return roles
 
     def analyse(self, text: str) -> Dict[str, object]:
-        """Return deterministic diagnostics without changing the input."""
         if not isinstance(text, str):
             raise TypeError("text must be a string")
-
         sentences = self._sentences(text)
-        words = self._words(text)
-        structure = self._paragraph_structure(sentences)
+        roles = self._roles(sentences)
+        role_names = [r["role"] for r in roles]
+
+        missing = []
+        for role in ("source_or_evidence", "interpretation", "comparison_or_synthesis"):
+            if role not in role_names:
+                missing.append(role)
 
         return {
             "sentence_count": len(sentences),
-            "word_count": len(words),
-            "formulaic_phrases": self._formulaic(text),
-            "possible_overclaims": self._overclaims(text),
+            "word_count": len(self._words(text)),
+            "formulaic_phrases": [p for p in self.FORMULAIC if p in text.lower()],
+            "possible_overclaims": [p for p in self.ABSOLUTES if p in text.lower()],
             "repetitive_openings": self._repetitive_openings(sentences),
-            "argument_signal_count": self._transition_count(text),
-            "argument_signals_present": self._argument_signals(text),
-            "long_sentences": self._long_sentences(sentences),
-            "citation_count": len(
-                re.findall(
-                    r"\([^()]*\b(?:19|20)\d{2}[a-z]?\b[^()]*\)",
-                    text,
-                )
-            ),
-            "paragraph_structure": structure,
+            "long_sentences": [
+                {"sentence": i, "words": len(self._words(s)), "text": s}
+                for i, s in enumerate(sentences, 1)
+                if len(self._words(s)) >= self.long_sentence_words
+            ],
+            "citation_count": self._citation_count(text),
+            "roles": roles,
+            "literature_review_signals": {
+                "source_or_evidence": any(r["role"] == "source_or_evidence" for r in roles),
+                "interpretation": any(r["role"] == "interpretation" for r in roles),
+                "comparison_or_synthesis": any(r["role"] == "comparison_or_synthesis" for r in roles),
+                "gap": any(r["role"] == "gap" for r in roles),
+                "author_position": any(r["role"] == "author_position" for r in roles),
+                "possible_missing": missing,
+            },
         }
 
     def summary(self, text: str) -> str:
-        """Return a short human-readable diagnostic summary."""
-        report = self.analyse(text)
-        messages = [
-            f"{report['sentence_count']} sentences, {report['word_count']} words."
-        ]
-
-        if report["formulaic_phrases"]:
-            messages.append(
-                "Formulaic phrases: "
-                + ", ".join(report["formulaic_phrases"])
-                + "."
-            )
-        if report["possible_overclaims"]:
-            messages.append(
-                "Possible overclaims: "
-                + ", ".join(report["possible_overclaims"])
-                + "."
-            )
-        if report["repetitive_openings"]:
-            messages.append(
-                "Repeated sentence openings: "
-                + ", ".join(
-                    f"{key} ({value})"
-                    for key, value in report["repetitive_openings"].items()
-                )
-                + "."
-            )
-        if report["long_sentences"]:
-            messages.append(
-                f"{len(report['long_sentences'])} sentence(s) exceed "
-                f"{self.long_sentence_words} words."
-            )
-
-        missing = report["paragraph_structure"]["possible_missing_roles"]
+        r = self.analyse(text)
+        messages = [f"{r['sentence_count']} sentences, {r['word_count']} words."]
+        if r["formulaic_phrases"]:
+            messages.append("Formulaic phrasing: " + ", ".join(r["formulaic_phrases"]) + ".")
+        if r["possible_overclaims"]:
+            messages.append("Possible overclaiming: " + ", ".join(r["possible_overclaims"]) + ".")
+        if r["repetitive_openings"]:
+            messages.append("Repeated openings: " + ", ".join(
+                f"{k} ({v})" for k, v in r["repetitive_openings"].items()) + ".")
+        if r["long_sentences"]:
+            messages.append(f"{len(r['long_sentences'])} long sentence(s) need review.")
+        missing = r["literature_review_signals"]["possible_missing"]
         if missing:
-            messages.append(
-                "Paragraph structure may need review: "
-                + ", ".join(missing)
-                + "."
-            )
-
-        if len(messages) == 1:
-            messages.append("No predefined warning patterns detected.")
-
+            messages.append("Review paragraph logic for: " + ", ".join(missing) + ".")
         return " ".join(messages)
 
 
 if __name__ == "__main__":
     sample = (
-        "Caste structures access to land (Jodhka, 2004). "
-        "This suggests that land relations cannot be separated from caste. "
-        "However, the relationship varies across regions."
+        "Jodhka (2004) shows that caste remains connected to land relations. "
+        "This suggests that land cannot be treated separately from caste. "
+        "However, other studies emphasise regional variation. "
+        "This study examines how these relations are reconfigured."
     )
-    analyzer = AcademicAnalyzer()
-    print(analyzer.summary(sample))
+    print(AcademicAnalyzer().summary(sample))
