@@ -1,8 +1,7 @@
 """Optional Google Docs integration using local OAuth credentials.
 
-Set GOOGLE_CLIENT_SECRET_FILE to the OAuth client JSON downloaded from Google Cloud.
-The first authorization stores a refresh token in GOOGLE_TOKEN_FILE (default:
-token.json). Keep both files private and never commit them.
+Google dependencies are optional so the core API and test suite work without them.
+Install requirements-google.txt before using the Google Docs endpoints.
 """
 
 from __future__ import annotations
@@ -47,10 +46,10 @@ class GoogleDocsIntegration:
         if Request is None or Credentials is None or Flow is None or build is None:
             raise ImportError(
                 "Google Docs dependencies are not installed. "
-                "Run: pip install -r requirements.txt -r requirements-google.txt"
+                "Run: pip install -r requirements-google.txt"
             )
 
-    def _credentials(self) -> Credentials | None:
+    def _credentials(self) -> Any:
         self._require_google_dependencies()
         if not self.token_file.exists():
             return None
@@ -105,8 +104,12 @@ class GoogleDocsIntegration:
         end_index = document.get("body", {}).get("content", [{}])[-1].get("endIndex", 1)
         requests = []
         if end_index > 2:
-            requests.append({"deleteContentRange": {"range": {"startIndex": 1, "endIndex": end_index - 1}}})
-        requests.append({"insertText": {"location": {"index": 1}, "text": text.rstrip() + "\n"}})
+            requests.append(
+                {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": end_index - 1}}}
+            )
+        requests.append(
+            {"insertText": {"location": {"index": 1}, "text": text.rstrip() + "\n"}}
+        )
         self._service().documents().batchUpdate(
             documentId=document_id, body={"requests": requests}
         ).execute()
