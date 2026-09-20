@@ -45,6 +45,26 @@ class TestAcademicHumanizer(unittest.TestCase):
             self.advanced.humanize_complete("Text.", "unknown")
 
 
+    def test_literature_review_entry_point(self):
+        text = "It is important to note that caste shapes land relations."
+        self.assertEqual(
+            self.core.humanize_literature_review(text),
+            "Caste shapes land relations.",
+        )
+
+    def test_preserves_paragraph_boundaries(self):
+        text = "First paragraph.\n\nSecond paragraph."
+        output = self.core.humanize_literature_review(text)
+        self.assertIn("\n\n", output)
+
+    def test_british_spelling(self):
+        text = "The study analyzes behavior and emphasizes regional variation."
+        output = self.core.humanize(text)
+        self.assertIn("analyses", output)
+        self.assertIn("behaviour", output)
+        self.assertIn("emphasises", output)
+
+
 class TestAcademicAnalyzer(unittest.TestCase):
     def setUp(self):
         self.analyzer = AcademicAnalyzer()
@@ -70,6 +90,21 @@ class TestAcademicAnalyzer(unittest.TestCase):
         text = "Caste relations matter. Caste relations shape access."
         report = self.analyzer.analyse(text)
         self.assertEqual(report["repetitive_openings"]["caste relations"], 2)
+
+
+    def test_literature_review_synthesis_signals(self):
+        text = (
+            "Jodhka (2004) examines caste and land. "
+            "This suggests that the relationship is material. "
+            "However, other studies identify regional variation. "
+            "This study examines the unresolved relationship."
+        )
+        report = self.analyzer.analyse(text)
+        signals = report["literature_review_signals"]
+        self.assertTrue(signals["source_or_evidence"])
+        self.assertTrue(signals["interpretation"])
+        self.assertTrue(signals["comparison_or_synthesis"])
+        self.assertTrue(signals["author_position"])
 
 
 if __name__ == "__main__":
