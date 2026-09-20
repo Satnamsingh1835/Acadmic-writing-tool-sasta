@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from academic_analyser import AcademicAnalyzer
 from academic_suggestions import AcademicSuggestionEngine
+from academic_suggestions import AcademicSuggestionEngine
 from advanced_humanize import AdvancedHumanizer
 from literature_review import LiteratureReviewAnalyzer
 
@@ -30,6 +31,7 @@ app = FastAPI(
 editor = AdvancedHumanizer()
 analyser = AcademicAnalyzer()
 suggestion_engine = AcademicSuggestionEngine()
+suggestion_engine = AcademicSuggestionEngine()
 lr_analyser = LiteratureReviewAnalyzer()
 
 
@@ -41,6 +43,7 @@ class ReviewRequest(BaseModel):
 
 class ReviewResponse(BaseModel):
     refined_text: Optional[str]
+    suggestions: list[dict]
     suggestions: list[dict]
     grammar_and_style: dict
     literature_review: dict
