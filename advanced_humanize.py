@@ -1,48 +1,39 @@
-"""Advanced academic humanization built on the conservative core."""
+"""Academic literature-review humanizer.
 
-from __future__ import annotations
-
-import re
-from typing import Dict
+Conservative and deterministic: no fillers, emojis, rhetorical questions,
+random sentence reordering, invented claims, or citation rewriting.
+"""
 
 from humanize import HumanizeAI
 
 
 class AdvancedHumanizer(HumanizeAI):
-    """Academic editor with conservative, standard, and polish modes.
+    """Academic editor with literature-review profiles."""
 
-    This class never randomly inserts fillers, emojis, rhetorical questions,
-    personal opinions, or sentence reordering.
-    """
-
-    PROFILES: Dict[str, Dict[str, bool]] = {
-        "conservative": {
-            "remove_ai_phrases": True,
-            "simplify_wordiness": False,
-            "soften_absolute_claims": False,
-        },
-        "standard": {
-            "remove_ai_phrases": True,
-            "simplify_wordiness": True,
-            "soften_absolute_claims": False,
-        },
-        "polish": {
-            "remove_ai_phrases": True,
-            "simplify_wordiness": True,
-            "soften_absolute_claims": True,
-        },
+    PROFILES = {
+        "conservative": dict(
+            remove_ai_phrases=True,
+            simplify_wordiness=False,
+            soften_absolute_claims=False,
+            british_english=True,
+        ),
+        "standard": dict(
+            remove_ai_phrases=True,
+            simplify_wordiness=True,
+            soften_absolute_claims=False,
+            british_english=True,
+        ),
+        "polish": dict(
+            remove_ai_phrases=True,
+            simplify_wordiness=True,
+            soften_absolute_claims=True,
+            british_english=True,
+        ),
     }
 
     def humanize_complete(self, text: str, intensity: str = "standard") -> str:
-        """Humanize academic prose using a named editing profile.
-
-        light/medium/heavy remain accepted for backwards compatibility.
-        """
-        aliases = {
-            "light": "conservative",
-            "medium": "standard",
-            "heavy": "polish",
-        }
+        """Humanize academic prose using a named profile."""
+        aliases = {"light": "conservative", "medium": "standard", "heavy": "polish"}
         profile = aliases.get(intensity.lower(), intensity.lower())
 
         if profile not in self.PROFILES:
@@ -51,27 +42,23 @@ class AdvancedHumanizer(HumanizeAI):
                 f"Choose from: {', '.join(self.PROFILES)}."
             )
 
-        settings = self.PROFILES[profile]
-        editor = HumanizeAI(**settings)
-        return editor.humanize(text)
+        return HumanizeAI(**self.PROFILES[profile]).humanize(text)
+
+    def humanize_literature_review(self, text: str, profile: str = "standard") -> str:
+        """Humanize a literature-review passage while preserving paragraphs."""
+        return self.humanize_complete(text, profile)
 
     def humanize_paragraph(self, text: str, profile: str = "standard") -> str:
-        """Alias with terminology suited to academic writing."""
-        return self.humanize_complete(text, intensity=profile)
-
-    def clean_spacing(self, text: str) -> str:
-        """Normalize whitespace without changing wording."""
-        return re.sub(r"[ \t]+", " ", text).strip()
+        return self.humanize_complete(text, profile)
 
 
 if __name__ == "__main__":
-    text = (
-        "It is important to note that the relationship between caste and land "
-        "is multifaceted. Moreover, it plays a crucial role in shaping agrarian "
-        "relations due to the fact that land is unequally distributed."
+    sample = (
+        "It is important to note that caste plays a crucial role in shaping "
+        "agrarian relations. Furthermore, land relations change due to the fact "
+        "that institutions are historically specific."
     )
-
-    humanizer = AdvancedHumanizer()
+    editor = AdvancedHumanizer()
     for profile in ("conservative", "standard", "polish"):
         print(f"\n--- {profile.upper()} ---")
-        print(humanizer.humanize_paragraph(text, profile))
+        print(editor.humanize_literature_review(sample, profile))
