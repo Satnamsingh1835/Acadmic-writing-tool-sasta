@@ -62,8 +62,35 @@ class AcademicAnalyzer:
         lower = sentence.lower()
         return [s for s in signals if re.search(r"\b" + re.escape(s) + r"\b", lower)]
 
-    def _citation_count(self, text: str) -> int:
-        return len(re.findall(r"\([^()]*\b(?:19|20)\d{2}[a-z]?\b[^()]*\)", text))
+    CITATION_PATTERNS = (
+        r"\\((?:[^()]*?\\b(?:19|20)\\d{2}[a-z]?\\b[^()]*)\\)",
+        r"\\b[A-Z][A-Za-z'’-]+(?:\\s+et al\\.)?\\s*\\((?:19|20)\\d{2}[a-z]?\\)",
+    )
+
+    @classmethod
+    def _citations(cls, text: str) -> List[str]:
+        citations = []
+        for pattern in cls.CITATION_PATTERNS:
+            citations.extend(re.findall(pattern, text))
+        return list(dict.fromkeys(citations))
+
+    @classmethod
+    def _citation_count(cls, text: str) -> int:
+        return len(cls._citations(text))
+
+    @classmethod
+    def _has_citation(cls, text: str) -> bool:
+        return bool(cls._citations(text))
+
+    @classmethod
+    def _source_attribution(cls, sentence: str) -> bool:
+        return bool(re.search(
+            r"\\b(?:[A-Z][A-Za-z'’-]+(?:\\s+et al\\.)?\\s*\\((?:19|20)\\d{2}[a-z]?\\)|"
+            r"according to|argues?|argue|finds?|found|shows?|show|reports?|reported|"
+            r"documents?|documented|observes?|observed|estimates?|estimated)\\b",
+            sentence,
+            re.IGNORECASE,
+        ))
 
     def _repetitive_openings(self, sentences: List[str]) -> Dict[str, int]:
         openings = []
@@ -77,7 +104,7 @@ class AcademicAnalyzer:
     def _roles(self, sentences: List[str]) -> List[Dict[str, object]]:
         roles = []
         for i, sentence in enumerate(sentences, 1):
-            citation = bool(re.search(r"\([^()]*\b(?:19|20)\d{2}[a-z]?\b[^()]*\)", sentence))
+            citation = self._has_citation(sentence)
             evidence = self._contains(sentence, self.EVIDENCE)
             interpretation = self._contains(sentence, self.INTERPRETATION)
             comparison = self._contains(sentence, self.COMPARISON)
@@ -136,6 +163,12 @@ class AcademicAnalyzer:
                 if len(self._words(s)) >= self.long_sentence_words
             ],
             "citation_count": self._citation_count(text),
+            "citations": self._citations(text),
+            "citation_diagnostics": {
+                "cited_source_claims": len(cited_source_claims),
+                "possible_uncited_source_claims": uncited_source_claims,
+                "note": "Possible flags only; some claims may be common knowledge or supported by a citation elsewhere in the paragraph.",
+            },
             "roles": roles,
             "literature_review_signals": {
                 "source_or_evidence": any(r["role"] == "source_or_evidence" for r in roles),
@@ -154,7 +187,7 @@ class AcademicAnalyzer:
             messages.append("Formulaic phrasing: " + ", ".join(r["formulaic_phrases"]) + ".")
         if r["possible_overclaims"]:
             messages.append("Possible overclaiming: " + ", ".join(r["possible_overclaims"]) + ".")
-        if r["repetitive_openings"]:
+        if r["citation_diagnostics"]["possible_uncited_source_claims"]:\n            messages.append("Possible uncited source-based claims in sentence(s): " + ", ".join(map(str, r["citation_diagnostics"]["possible_uncited_source_claims"])) + ".")\n        if r["repetitive_openings"]:
             messages.append("Repeated openings: " + ", ".join(
                 f"{k} ({v})" for k, v in r["repetitive_openings"].items()) + ".")
         if r["long_sentences"]:
