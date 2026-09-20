@@ -61,6 +61,7 @@ The first API supports:
 The review response separates:
 
 - refined_text;
+- suggestions — sentence-level issue, explanation, suggested revision, and confidence;
 - grammar_and_style;
 - literature_review;
 - safeguards.
@@ -81,22 +82,37 @@ R reads a proposal text file
 A later R helper package can wrap these calls, but the HTTP API should remain
 the stable interface.
 
+## Current implementation
+
+The repository now includes a sentence-level suggestion engine. For each flagged
+sentence it can return the original text, issue category, detected issue,
+possible revision, explanation, confidence, and a manual-check flag. This keeps
+language editing explainable and leaves acceptance of each change with the writer.
+
+The API also includes regression tests for health checks, pasted text, text-file
+uploads, invalid profiles, empty text, and UTF-8 validation. A small R client is
+included under `R/` so the service can be called from an R research workflow.
+
 ## Future development
 
-### Phase 1: API stability
+### Phase 1: API stability — implemented
 
-Add tests for API validation, file upload, profiles, empty files, and response
-schemas.
+The API has regression tests for validation, file upload, profiles, empty text,
+UTF-8 handling, and the response structure.
 
-### Phase 2: Better language feedback
+### Phase 2: Better language feedback — implemented
 
-Return explicit sentence-level suggestions:
+The API now returns explicit sentence-level suggestions:
 
 - original sentence;
 - issue type;
 - reason for the suggestion;
 - suggested revision;
-- confidence/uncertainty.
+- confidence/uncertainty;
+- a manual-check flag.
+
+The next priority is to improve the quality of the detectable grammar and clarity
+rules without turning stylistic preferences into false claims of grammatical error.
 
 The system should distinguish grammar, clarity, concision, and academic-style
 suggestions rather than calling every stylistic preference a grammar error.
