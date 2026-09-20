@@ -57,6 +57,27 @@ class TestAcademicHumanizer(unittest.TestCase):
         output = self.core.humanize_literature_review(text)
         self.assertIn("\n\n", output)
 
+
+    def test_language_only_diagnostics_preserve_structure(self):
+        original = (
+            "It is important to note that caste shapes land relations (Gupta, 2000).\n\n"
+            "However, regional variation matters (Judge, 2014)."
+        )
+        revised = self.core.humanize_literature_review(original)
+        diagnostics = self.core.language_only_diagnostics(original, revised)
+        self.assertTrue(diagnostics["paragraph_count_preserved"])
+        self.assertTrue(diagnostics["sentence_count_preserved"])
+        self.assertTrue(diagnostics["citations_preserved"])
+        self.assertTrue(diagnostics["requires_manual_semantic_check"])
+
+    def test_language_only_edit_does_not_reorder_sentences(self):
+        original = (
+            "Jodhka (2004) examines caste and land relations. "
+            "Gupta (2000) identifies regional variation."
+        )
+        revised = self.core.humanize_literature_review(original)
+        self.assertLess(revised.index("Jodhka"), revised.index("Gupta"))
+
     def test_british_spelling(self):
         text = "The study analyzes behavior and emphasizes regional variation."
         output = self.core.humanize(text)
