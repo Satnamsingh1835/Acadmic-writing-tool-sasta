@@ -38,7 +38,7 @@ class HumanizeAI:
         "hence": "therefore",
     }
 
-    DEFAULT_WORDINESS = {
+    DEFAULT_BRITISH = {\n        r"\\banalyzes\\b": "analyses", r"\\banalyze\\b": "analyse",\n        r"\\bbehavior\\b": "behaviour", r"\\bcentered\\b": "centred",\n        r"\\bcontextualized\\b": "contextualised", r"\\bconceptualized\\b": "conceptualised",\n        r"\\bcriticized\\b": "criticised", r"\\bdecentralized\\b": "decentralised",\n        r"\\bemphasized\\b": "emphasised", r"\\bfavor\\b": "favour", r"\\bfavored\\b": "favoured",\n        r"\\bglobalization\\b": "globalisation", r"\\bmaximize\\b": "maximise",\n        r"\\bminimize\\b": "minimise", r"\\borganize\\b": "organise",\n        r"\\borganized\\b": "organised", r"\\brecognize\\b": "recognise",\n        r"\\btheorize\\b": "theorise",\n    }\n\n    DEFAULT_WORDINESS = {
         r"\bin order to\b": "to",
         r"\bdue to the fact that\b": "because",
         r"\bdespite the fact that\b": "although",
@@ -56,10 +56,12 @@ class HumanizeAI:
         remove_ai_phrases: bool = True,
         simplify_wordiness: bool = True,
         soften_absolute_claims: bool = False,
+        british_english: bool = True,
     ) -> None:
         self.remove_ai_phrases = remove_ai_phrases
         self.simplify_wordiness = simplify_wordiness
         self.soften_absolute_claims = soften_absolute_claims
+        self.british_english = british_english
 
     @staticmethod
     def _protect(text: str) -> Tuple[str, List[str]]:
@@ -114,8 +116,7 @@ class HumanizeAI:
             )
         return self._capitalise_after_removal(text)
 
-    def simplify(self, text: str) -> str:
-        """Reduce common wordiness without changing the proposition."""
+    def britishize(self, text: str) -> str:\n        """Use selected British academic spellings without touching protected text."""\n        if not self.british_english:\n            return text\n        for pattern, replacement in self.DEFAULT_BRITISH.items():\n            text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)\n        return text\n\n    def simplify(self, text: str) -> str:\n        """Reduce common wordiness without changing the proposition."""
         for pattern, replacement in self.DEFAULT_WORDINESS.items():
             text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
         return text
@@ -161,12 +162,7 @@ class HumanizeAI:
 
         if self.remove_ai_phrases:
             working = self.remove_ai_markers(working)
-        if self.simplify_wordiness:
-            working = self.simplify(working)
-
-        sentences = self._sentences(working)
-        sentences = [self.normalize_transitions(s) for s in sentences]
-        working = " ".join(sentences)
+        if self.simplify_wordiness:\n            working = self.simplify(working)\n        working = self.britishize(working)\n\n        paragraphs = re.split(r"\\n\\s*\\n", working)\n        revised_paragraphs = []\n        for paragraph in paragraphs:\n            sentences = self._sentences(paragraph)\n            revised_paragraphs.append(" ".join(self.normalize_transitions(s) for s in sentences))\n        working = "\\n\\n".join(revised_paragraphs)\n\n        sentences = self._sentences(working)
         working = self.vary_repetition(working)
 
         if self.soften_absolute_claims:
