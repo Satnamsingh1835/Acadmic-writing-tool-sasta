@@ -44,6 +44,16 @@ class AcademicAnalyzer:
         "this article", "i argue", "i examine", "i explore",
     )
 
+    CITATION_AUTHOR_YEAR = re.compile(
+        r"\b[A-Z][A-Za-z'’-]+(?:\s+et al\.)?\s*\((?:19|20)\d{2}[a-z]?\)"
+    )
+    CITATION_PARENTHETICAL = re.compile(
+        r"\(([^()]*(?:19|20)\d{2}[a-z]?[^()]*)\)"
+    )
+    AUTHOR_YEAR_IN_PARENTHESIS = re.compile(
+        r"[A-Z][A-Za-z'’-]+(?:\s+et al\.)?,?\s+(?:19|20)\d{2}[a-z]?"
+    )
+
     def __init__(self, long_sentence_words: int = 35) -> None:
         if long_sentence_words < 1:
             raise ValueError("long_sentence_words must be positive")
@@ -51,7 +61,11 @@ class AcademicAnalyzer:
 
     @staticmethod
     def _sentences(text: str) -> List[str]:
-        return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
+        return [
+            s.strip()
+            for s in re.split(r"(?<=[.!?])\s+", text.strip())
+            if s.strip()
+        ]
 
     @staticmethod
     def _words(text: str) -> List[str]:
@@ -60,18 +74,20 @@ class AcademicAnalyzer:
     @staticmethod
     def _contains(sentence: str, signals: tuple[str, ...]) -> List[str]:
         lower = sentence.lower()
-        return [s for s in signals if re.search(r"\b" + re.escape(s) + r"\b", lower)]
-
-    CITATION_PATTERNS = (
-        r"\((?:[^()]*?\b(?:19|20)\\d{2}[a-z]?\b[^()]*)\)",
-        r"\b[A-Z][A-Za-z'’-]+(?:\s+et al\\.)?\s*\\((?:19|20)\\d{2}[a-z]?\)",
-    )
+        return [
+            s for s in signals
+            if re.search(r"\b" + re.escape(s) + r"\b", lower)
+        ]
 
     @classmethod
     def _citations(cls, text: str) -> List[str]:
         citations = []
-        for pattern in cls.CITATION_PATTERNS:
-            citations.extend(re.findall(pattern, text))
+        citations.extend(m.group(0) for m in cls.CITATION_AUTHOR_YEAR.finditer(text))
+
+        for match in cls.CITATION_PARENTHETICAL.finditer(text):
+            for citation in cls.AUTHOR_YEAR_IN_PARENTHESIS.findall(match.group(1)):
+                citations.append(citation.strip())
+
         return list(dict.fromkeys(citations))
 
     @classmethod
@@ -84,13 +100,16 @@ class AcademicAnalyzer:
 
     @classmethod
     def _source_attribution(cls, sentence: str) -> bool:
-        return bool(re.search(
-            r"\b(?:[A-Z][A-Za-z'’-]+(?:\s+et al\\.)?\s*\\((?:19|20)\\d{2}[a-z]?\)|"
-            r"according to|argues?|argue|finds?|found|shows?|show|reports?|reported|"
-            r"documents?|documented|observes?|observed|estimates?|estimated)\b",
-            sentence,
-            re.IGNORECASE,
-        ))
+        return bool(
+            cls.CITATION_AUTHOR_YEAR.search(sentence)
+            or re.search(
+                r"\b(?:according to|argues?|argue|finds?|found|shows?|show|"
+                r"reports?|reported|documents?|documented|observes?|observed|"
+                r"estimates?|estimated)\b",
+                sentence,
+                re.IGNORECASE,
+            )
+        )
 
     def _repetitive_openings(self, sentences: List[str]) -> Dict[str, int]:
         openings = []
@@ -142,20 +161,38 @@ class AcademicAnalyzer:
     def analyse(self, text: str) -> Dict[str, object]:
         if not isinstance(text, str):
             raise TypeError("text must be a string")
+
         sentences = self._sentences(text)
         roles = self._roles(sentences)
         role_names = [r["role"] for r in roles]
 
         missing = []
-        for role in ("source_or_evidence", "interpretation", "comparison_or_synthesis"):
+        for role in (
+            "source_or_evidence",
+            "interpretation",
+            "comparison_or_synthesis",
+        ):
             if role not in role_names:
                 missing.append(role)
+
+        cited_source_claims = [
+            i for i, sentence in enumerate(sentences, 1)
+            if self._source_attribution(sentence) and self._has_citation(sentence)
+        ]
+        uncited_source_claims = [
+            i for i, sentence in enumerate(sentences, 1)
+            if self._source_attribution(sentence) and not self._has_citation(sentence)
+        ]
 
         return {
             "sentence_count": len(sentences),
             "word_count": len(self._words(text)),
-            "formulaic_phrases": [p for p in self.FORMULAIC if p in text.lower()],
-            "possible_overclaims": [p for p in self.ABSOLUTES if p in text.lower()],
+            "formulaic_phrases": [
+                p for p in self.FORMULAIC if p in text.lower()
+            ],
+            "possible_overclaims": [
+                p for p in self.ABSOLUTES if p in text.lower()
+            ],
             "repetitive_openings": self._repetitive_openings(sentences),
             "long_sentences": [
                 {"sentence": i, "words": len(self._words(s)), "text": s}
@@ -167,15 +204,26 @@ class AcademicAnalyzer:
             "citation_diagnostics": {
                 "cited_source_claims": len(cited_source_claims),
                 "possible_uncited_source_claims": uncited_source_claims,
-                "note": "Possible flags only; some claims may be common knowledge or supported by a citation elsewhere in the paragraph.",
+                "note": (
+                    "Possible flags only; some claims may be common knowledge "
+                    "or supported by a citation elsewhere in the paragraph."
+                ),
             },
             "roles": roles,
             "literature_review_signals": {
-                "source_or_evidence": any(r["role"] == "source_or_evidence" for r in roles),
-                "interpretation": any(r["role"] == "interpretation" for r in roles),
-                "comparison_or_synthesis": any(r["role"] == "comparison_or_synthesis" for r in roles),
+                "source_or_evidence": any(
+                    r["role"] == "source_or_evidence" for r in roles
+                ),
+                "interpretation": any(
+                    r["role"] == "interpretation" for r in roles
+                ),
+                "comparison_or_synthesis": any(
+                    r["role"] == "comparison_or_synthesis" for r in roles
+                ),
                 "gap": any(r["role"] == "gap" for r in roles),
-                "author_position": any(r["role"] == "author_position" for r in roles),
+                "author_position": any(
+                    r["role"] == "author_position" for r in roles
+                ),
                 "possible_missing": missing,
             },
         }
@@ -184,17 +232,43 @@ class AcademicAnalyzer:
         r = self.analyse(text)
         messages = [f"{r['sentence_count']} sentences, {r['word_count']} words."]
         if r["formulaic_phrases"]:
-            messages.append("Formulaic phrasing: " + ", ".join(r["formulaic_phrases"]) + ".")
+            messages.append(
+                "Formulaic phrasing: " + ", ".join(r["formulaic_phrases"]) + "."
+            )
         if r["possible_overclaims"]:
-            messages.append("Possible overclaiming: " + ", ".join(r["possible_overclaims"]) + ".")
-        if r["citation_diagnostics"]["possible_uncited_source_claims"]:\n            messages.append("Possible uncited source-based claims in sentence(s): " + ", ".join(map(str, r["citation_diagnostics"]["possible_uncited_source_claims"])) + ".")\n        if r["repetitive_openings"]:
-            messages.append("Repeated openings: " + ", ".join(
-                f"{k} ({v})" for k, v in r["repetitive_openings"].items()) + ".")
+            messages.append(
+                "Possible overclaiming: "
+                + ", ".join(r["possible_overclaims"]) + "."
+            )
+        if r["citation_diagnostics"]["possible_uncited_source_claims"]:
+            messages.append(
+                "Possible uncited source-based claims in sentence(s): "
+                + ", ".join(
+                    map(
+                        str,
+                        r["citation_diagnostics"]["possible_uncited_source_claims"],
+                    )
+                )
+                + "."
+            )
+        if r["repetitive_openings"]:
+            messages.append(
+                "Repeated openings: "
+                + ", ".join(
+                    f"{k} ({v})"
+                    for k, v in r["repetitive_openings"].items()
+                )
+                + "."
+            )
         if r["long_sentences"]:
-            messages.append(f"{len(r['long_sentences'])} long sentence(s) need review.")
+            messages.append(
+                f"{len(r['long_sentences'])} long sentence(s) need review."
+            )
         missing = r["literature_review_signals"]["possible_missing"]
         if missing:
-            messages.append("Review paragraph logic for: " + ", ".join(missing) + ".")
+            messages.append(
+                "Review paragraph logic for: " + ", ".join(missing) + "."
+            )
         return " ".join(messages)
 
 
