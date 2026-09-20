@@ -14,7 +14,6 @@ from pydantic import BaseModel, Field
 
 from academic_analyser import AcademicAnalyzer
 from academic_suggestions import AcademicSuggestionEngine
-from academic_suggestions import AcademicSuggestionEngine
 from advanced_humanize import AdvancedHumanizer
 from literature_review import LiteratureReviewAnalyzer
 
@@ -31,7 +30,6 @@ app = FastAPI(
 editor = AdvancedHumanizer()
 analyser = AcademicAnalyzer()
 suggestion_engine = AcademicSuggestionEngine()
-suggestion_engine = AcademicSuggestionEngine()
 lr_analyser = LiteratureReviewAnalyzer()
 
 
@@ -44,18 +42,30 @@ class ReviewRequest(BaseModel):
 class ReviewResponse(BaseModel):
     refined_text: Optional[str]
     suggestions: list[dict]
-    suggestions: list[dict]
     grammar_and_style: dict
     literature_review: dict
     safeguards: dict
+
+
+def _normalize_profile(profile: str) -> str:
+    """Accept the documented names and the aliases used by the editor."""
+    aliases = {"light": "conservative", "medium": "standard", "heavy": "polish"}
+    normalized = aliases.get(profile.lower(), profile.lower())
+    if normalized not in editor.PROFILES:
+        raise ValueError(
+            f"Unknown profile '{profile}'. "
+            f"Choose from: {', '.join(editor.PROFILES)}."
+        )
+    return normalized
 
 
 def review_text(text: str, profile: str, include_refined_text: bool) -> ReviewResponse:
     if not text.strip():
         raise HTTPException(status_code=400, detail="Text is empty.")
     try:
-        refined = editor.humanize_literature_review(text, profile)
-        suggestions = suggestion_engine.suggest(text, profile)
+        profile_name = _normalize_profile(profile)
+        refined = editor.humanize_literature_review(text, profile_name)
+        suggestions = suggestion_engine.suggest(text, profile_name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
