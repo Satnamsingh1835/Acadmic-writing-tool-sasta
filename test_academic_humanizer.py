@@ -106,6 +106,21 @@ class TestAcademicAnalyzer(unittest.TestCase):
         self.assertTrue(signals["comparison_or_synthesis"])
         self.assertTrue(signals["author_position"])
 
+    def test_detects_author_year_and_parenthetical_citations(self):
+        text = (
+            "Jodhka (2004) examines caste and land relations. "
+            "Regional variation is also documented (Judge, 2014; Gupta, 2000)."
+        )
+        report = self.analyzer.analyse(text)
+        self.assertEqual(report["citation_count"], 3)
+        self.assertTrue(any("Jodhka" in c for c in report["citations"]))
+        self.assertEqual(report["citation_diagnostics"]["possible_uncited_source_claims"], [])
+
+    def test_flags_possible_uncited_source_claim(self):
+        text = "Jodhka argues that caste structures access to land."
+        report = self.analyzer.analyse(text)
+        self.assertIn(1, report["citation_diagnostics"]["possible_uncited_source_claims"])
+
 
 if __name__ == "__main__":
     unittest.main()
