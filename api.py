@@ -10,11 +10,13 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
 from academic_analyser import AcademicAnalyzer
 from academic_suggestions import AcademicSuggestionEngine
 from advanced_humanize import AdvancedHumanizer
+from google_docs import GoogleDocsIntegration
 from literature_review import LiteratureReviewAnalyzer
 
 
@@ -31,6 +33,7 @@ editor = AdvancedHumanizer()
 analyser = AcademicAnalyzer()
 suggestion_engine = AcademicSuggestionEngine()
 lr_analyser = LiteratureReviewAnalyzer()
+google_integration = GoogleDocsIntegration()
 
 
 class ReviewRequest(BaseModel):
@@ -45,6 +48,13 @@ class ReviewResponse(BaseModel):
     grammar_and_style: dict
     literature_review: dict
     safeguards: dict
+
+
+class GoogleReviewRequest(BaseModel):
+    document_id: str = Field(min_length=1)
+    profile: str = Field(default="standard")
+    include_refined_text: bool = True
+    write_back: bool = False
 
 
 def _normalize_profile(profile: str) -> str:
@@ -81,6 +91,53 @@ def review_text(text: str, profile: str, include_refined_text: bool) -> ReviewRe
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "service": "academic-literature-review-assistant"}
+
+
+@app.get("/google/auth")
+def google_auth() -> RedirectResponse:
+    try:
+        return RedirectResponse(url=google_integration.authorization_url())
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Google OAuth client_secret.json is missing. Add it before using Google Docs.",
+        ) from exc
+
+
+@app.get("/google/callback")
+def google_callback(code: str | None = None, error: str | None = None) -> dict:
+    if error:
+        raise HTTPException(status_code=400, detail=f"Google authorization failed: {error}")
+    if not code:
+        raise HTTPException(status_code=400, detail="Google auth callback missing a code parameter.")
+    try:
+        google_integration.finish_authorization(code)
+    except Exception as exc:  # pragma: no cover - external OAuth dependency path
+        raise HTTPException(status_code=400, detail=f"Could not complete Google authorization: {exc}") from exc
+    return {"status": "authorized", "message": "Google Docs access connected successfully."}
+
+
+@app.post("/google/review", response_model=ReviewResponse)
+def review_google_document(request: GoogleReviewRequest) -> ReviewResponse:
+    try:
+        source_text = google_integration.read_document(request.document_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Google OAuth client file not found: {exc}") from exc
+    except Exception as exc:  # pragma: no cover - external API issue
+        raise HTTPException(status_code=400, detail=f"Could not read the Google document: {exc}") from exc
+
+    if not source_text.strip():
+        raise HTTPException(status_code=400, detail="The Google document is empty.")
+
+    reviewed = review_text(source_text, request.profile, request.include_refined_text)
+    if request.write_back and reviewed.refined_text:
+        try:
+            google_integration.replace_document(request.document_id, reviewed.refined_text)
+        except Exception as exc:  # pragma: no cover - external API issue
+            raise HTTPException(status_code=400, detail=f"Could not write back to Google Docs: {exc}") from exc
+    return reviewed
 
 
 @app.post("/review", response_model=ReviewResponse)
