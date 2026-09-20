@@ -1,149 +1,182 @@
-import random
+"""Academic text humanization without changing the author's argument."""
+
+from __future__ import annotations
+
 import re
-from typing import List
+from typing import Iterable, List, Tuple
+
 
 class HumanizeAI:
-    """
-    Converts machine-like AI responses into more natural, human-like text.
-    """
-    
-    def __init__(self):
-        # Filler words and phrases to add natural flow
-        self.filler_words = [
-            "you know", "I mean", "like", "actually", "honestly",
-            "kind of", "sort of", "basically", "essentially", "I think",
-            "in my opinion", "to be honest"
+    """Conservatively revise AI-like academic prose into clearer prose."""
+
+    DEFAULT_AI_PHRASES = (
+        "it is important to note that",
+        "it is worth noting that",
+        "it should be noted that",
+        "in today's world",
+        "in the modern era",
+        "in the realm of",
+        "a wide range of",
+        "a plethora of",
+        "plays a crucial role in",
+        "plays a vital role in",
+        "delve into",
+        "delves into",
+        "deep dive into",
+        "shed light on",
+        "multifaceted",
+        "groundbreaking",
+        "seamless",
+        "robust and comprehensive",
+    )
+
+    DEFAULT_TRANSITIONS = {
+        "furthermore": "also",
+        "moreover": "also",
+        "additionally": "also",
+        "thus": "therefore",
+        "hence": "therefore",
+    }
+
+    DEFAULT_WORDINESS = {
+        r"\bin order to\b": "to",
+        r"\bdue to the fact that\b": "because",
+        r"\bdespite the fact that\b": "although",
+        r"\bat this point in time\b": "currently",
+        r"\bhas the ability to\b": "can",
+        r"\bis able to\b": "can",
+        r"\ba number of\b": "several",
+        r"\bin the event that\b": "if",
+        r"\bfor the purpose of\b": "for",
+    }
+
+    def __init__(
+        self,
+        *,
+        remove_ai_phrases: bool = True,
+        simplify_wordiness: bool = True,
+        soften_absolute_claims: bool = False,
+    ) -> None:
+        self.remove_ai_phrases = remove_ai_phrases
+        self.simplify_wordiness = simplify_wordiness
+        self.soften_absolute_claims = soften_absolute_claims
+
+    @staticmethod
+    def _protect(text: str) -> Tuple[str, List[str]]:
+        """Protect URLs, citations, and quoted text."""
+        protected: List[str] = []
+        patterns = [
+            r"https?://\S+",
+            r"\b(?:doi:)?10\.\d{4,9}/[-._;()/:A-Z0-9]+\b",
+            r"\([^()]{0,120}\b(?:19|20)\d{2}[a-z]?\b[^()]{0,120}\)",
+            r'"[^"]*"',
+            r"'[^']*'",
         ]
-        
-        # Transitional phrases for better flow
-        self.transitions = [
-            "Here's the thing:",
-            "So basically,",
-            "The way I see it,",
-            "What I mean is,",
-            "Let me explain:",
-            "Here's my take:",
-            "In other words,"
+
+        def repl(match: re.Match[str]) -> str:
+            token = f"___ACADEMIC_PROTECTED_{len(protected)}___"
+            protected.append(match.group(0))
+            return token
+
+        for pattern in patterns:
+            text = re.sub(pattern, repl, text, flags=re.IGNORECASE)
+        return text, protected
+
+    @staticmethod
+    def _restore(text: str, protected: Iterable[str]) -> str:
+        for i, value in enumerate(protected):
+            text = text.replace(f"___ACADEMIC_PROTECTED_{i}___", value)
+        return text
+
+    @staticmethod
+    def _sentences(text: str) -> List[str]:
+        return [
+            s.strip()
+            for s in re.split(r"(?<=[.!?])\s+(?=[A-ZÀ-ÖØ-Þ])", text.strip())
+            if s.strip()
         ]
-        
-        # Conversational starters
-        self.starters = [
-            "Well, ",
-            "So, ",
-            "Look, ",
-            "Actually, ",
-            "You know what, "
-        ]
-    
-    def add_contractions(self, text: str) -> str:
-        """
-        Replace formal phrases with conversational contractions.
-        """
+
+    @staticmethod
+    def _capitalise_after_removal(text: str) -> str:
+        text = re.sub(r"\s{2,}", " ", text).strip()
+        if text:
+            text = text[0].upper() + text[1:]
+        return text
+
+    def remove_ai_markers(self, text: str) -> str:
+        """Remove formulaic AI framing while retaining the underlying claim."""
+        for phrase in self.DEFAULT_AI_PHRASES:
+            text = re.sub(
+                rf"\b{re.escape(phrase)}\s*[:,]?\s*",
+                "",
+                text,
+                flags=re.IGNORECASE,
+            )
+        return self._capitalise_after_removal(text)
+
+    def simplify(self, text: str) -> str:
+        """Reduce common wordiness without changing the proposition."""
+        for pattern, replacement in self.DEFAULT_WORDINESS.items():
+            text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+        return text
+
+    def normalize_transitions(self, text: str) -> str:
+        """Reduce formulaic paragraph transitions."""
+        for source, target in self.DEFAULT_TRANSITIONS.items():
+            text = re.sub(
+                rf"^\s*{source}\s*[,;:]\s*",
+                f"{target.capitalize()}, ",
+                text,
+                flags=re.IGNORECASE,
+            )
+        return text
+
+    def vary_repetition(self, text: str) -> str:
+        """Remove immediate word repetition only; never reorder sentences."""
+        return re.sub(r"\b(\w+)(\s+\1\b)+", r"\1", text, flags=re.IGNORECASE)
+
+    def soften_claims(self, text: str) -> str:
+        """Optionally soften categorical claims; disabled by default."""
         replacements = {
-            r'\bdo not\b': "don't",
-            r'\bcannot\b': "can't",
-            r'\bwill not\b': "won't",
-            r'\bcould not\b': "couldn't",
-            r'\bshould not\b': "shouldn't",
-            r'\bwould not\b': "wouldn't",
-            r'\bit is\b': "it's",
-            r'\bthere is\b': "there's",
-            r'\bhave been\b': "been",
-            r'\bI am\b': "I'm",
-            r'\byou are\b': "you're",
-            r'\bthat is\b': "that's",
+            r"\balways\b": "often",
+            r"\bnever\b": "rarely",
+            r"\bproves that\b": "suggests that",
+            r"\bclearly demonstrates\b": "suggests",
+            r"\bdefinitively shows\b": "indicates",
         }
-        
         for pattern, replacement in replacements.items():
             text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
-        
         return text
-    
-    def break_long_sentences(self, text: str, max_length: int = 60) -> str:
-        """
-        Break long sentences into shorter, more conversational ones.
-        """
-        sentences = text.split('. ')
-        result = []
-        
-        for sentence in sentences:
-            if len(sentence) > max_length:
-                # Split on conjunctions
-                parts = re.split(r'\s+(and|but|because|however|therefore)\s+', sentence)
-                current = ""
-                
-                for part in parts:
-                    if current and len(current) + len(part) > max_length:
-                        result.append(current.strip())
-                        current = part
-                    else:
-                        current += " " + part if current else part
-                
-                if current:
-                    result.append(current.strip())
-            else:
-                result.append(sentence)
-        
-        return '. '.join(result) + '.'
-    
-    def add_personality(self, text: str) -> str:
-        """
-        Add subtle personality and filler words for natural flow.
-        """
-        # Add occasional fillers to longer sentences
-        sentences = text.split('. ')
-        result = []
-        
-        for i, sentence in enumerate(sentences):
-            if len(sentence.split()) > 10 and random.random() < 0.3:
-                # Insert filler word randomly
-                words = sentence.split()
-                insert_pos = random.randint(2, len(words) - 2)
-                filler = random.choice(self.filler_words)
-                words.insert(insert_pos, filler)
-                sentence = ' '.join(words)
-            
-            result.append(sentence)
-        
-        return '. '.join(result) + '.'
-    
+
     def humanize(self, text: str) -> str:
-        """
-        Main method: Apply all humanization techniques.
-        """
-        if not text:
+        """Return a conservative academic-style revision."""
+        if not text or not text.strip():
             return text
-        
-        # Step 1: Add contractions
-        text = self.add_contractions(text)
-        
-        # Step 2: Break long sentences
-        text = self.break_long_sentences(text)
-        
-        # Step 3: Add personality
-        text = self.add_personality(text)
-        
-        # Step 4: Clean up extra spaces
-        text = re.sub(r'\s+', ' ', text).strip()
-        
-        return text
+
+        working, protected = self._protect(text.strip())
+
+        if self.remove_ai_phrases:
+            working = self.remove_ai_markers(working)
+        if self.simplify_wordiness:
+            working = self.simplify(working)
+
+        sentences = self._sentences(working)
+        sentences = [self.normalize_transitions(s) for s in sentences]
+        working = " ".join(sentences)
+        working = self.vary_repetition(working)
+
+        if self.soften_absolute_claims:
+            working = self.soften_claims(working)
+
+        working = re.sub(r"[ \t]+", " ", working)
+        working = re.sub(r"\n{3,}", "\n\n", working).strip()
+        return self._restore(working, protected)
 
 
-# Example usage
 if __name__ == "__main__":
-    humanizer = HumanizeAI()
-    
-    # Machine-like response
-    machine_text = """The implementation of this algorithm requires careful consideration of multiple factors. 
-    These include performance optimization, resource allocation, and error handling mechanisms. 
-    Furthermore, it is essential to ensure that the system can scale efficiently under varying load conditions. 
-    The architectural design must therefore prioritize robustness and maintainability."""
-    
-    # Humanized response
-    human_text = humanizer.humanize(machine_text)
-    
-    print("ORIGINAL (Machine-like):")
-    print(machine_text)
-    print("\n" + "="*60 + "\n")
-    print("HUMANIZED:")
-    print(human_text)
+    example = (
+        "It is important to note that caste plays a crucial role in shaping "
+        "agrarian relations. Furthermore, this relationship is complex due to "
+        "the fact that land relations change over time."
+    )
+    print(HumanizeAI().humanize(example))
