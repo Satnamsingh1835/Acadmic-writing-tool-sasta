@@ -112,6 +112,29 @@ class HumanizeAI:
             text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
         return text
 
+    @staticmethod
+    def language_only_diagnostics(original: str, revised: str) -> dict:
+        """Check structural invariants after a language-only edit.
+
+        These checks cannot prove that meaning is unchanged; they identify
+        structural changes that require manual review.
+        """
+        sentence_count = lambda value: len(HumanizeAI._sentences(value))
+        paragraph_count = lambda value: len(
+            [p for p in re.split(r"\\n\\s*\\n+", value.strip()) if p.strip()]
+        )
+        citations = lambda value: re.findall(
+            r"\\([^()]{0,120}\\b(?:19|20)\\d{2}[a-z]?\\b[^()]{0,120}\\)",
+            value,
+        )
+        return {
+            "paragraph_count_preserved": paragraph_count(original) == paragraph_count(revised),
+            "sentence_count_preserved": sentence_count(original) == sentence_count(revised),
+            "citations_preserved": citations(original) == citations(revised),
+            "requires_manual_semantic_check": True,
+            "note": "Structural checks are safeguards, not proof that the author's meaning or argument is unchanged.",
+        }
+
     def humanize_literature_review(self, text: str) -> str:
         """Language-only editing entry point; paragraph and sentence order are retained."""
         return self.humanize(text)
