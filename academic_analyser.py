@@ -63,8 +63,8 @@ class AcademicAnalyzer:
         return [s for s in signals if re.search(r"\b" + re.escape(s) + r"\b", lower)]
 
     CITATION_PATTERNS = (
-        r"\\((?:[^()]*?\\b(?:19|20)\\d{2}[a-z]?\\b[^()]*)\\)",
-        r"\\b[A-Z][A-Za-z'’-]+(?:\\s+et al\\.)?\\s*\\((?:19|20)\\d{2}[a-z]?\\)",
+        r"\((?:[^()]*?\b(?:19|20)\\d{2}[a-z]?\b[^()]*)\)",
+        r"\b[A-Z][A-Za-z'’-]+(?:\s+et al\\.)?\s*\\((?:19|20)\\d{2}[a-z]?\)",
     )
 
     @classmethod
@@ -85,9 +85,9 @@ class AcademicAnalyzer:
     @classmethod
     def _source_attribution(cls, sentence: str) -> bool:
         return bool(re.search(
-            r"\\b(?:[A-Z][A-Za-z'’-]+(?:\\s+et al\\.)?\\s*\\((?:19|20)\\d{2}[a-z]?\\)|"
+            r"\b(?:[A-Z][A-Za-z'’-]+(?:\s+et al\\.)?\s*\\((?:19|20)\\d{2}[a-z]?\)|"
             r"according to|argues?|argue|finds?|found|shows?|show|reports?|reported|"
-            r"documents?|documented|observes?|observed|estimates?|estimated)\\b",
+            r"documents?|documented|observes?|observed|estimates?|estimated)\b",
             sentence,
             re.IGNORECASE,
         ))
