@@ -11,10 +11,16 @@ import os
 from pathlib import Path
 from typing import Any
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import Flow
-from googleapiclient.discovery import build
+try:  # pragma: no cover - optional dependency path
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import Flow
+    from googleapiclient.discovery import build
+except ImportError:  # pragma: no cover - optional dependency path
+    Request = None  # type: ignore[assignment]
+    Credentials = None  # type: ignore[assignment]
+    Flow = None  # type: ignore[assignment]
+    build = None  # type: ignore[assignment]
 
 SCOPES = ["https://www.googleapis.com/auth/documents"]
 DEFAULT_TOKEN_FILE = "token.json"
@@ -37,7 +43,15 @@ class GoogleDocsIntegration:
             "GOOGLE_REDIRECT_URI", "http://localhost:8000/google/callback"
         )
 
+    def _require_google_dependencies(self) -> None:
+        if Request is None or Credentials is None or Flow is None or build is None:
+            raise ImportError(
+                "Google Docs dependencies are not installed. "
+                "Run: pip install -r requirements.txt -r requirements-google.txt"
+            )
+
     def _credentials(self) -> Credentials | None:
+        self._require_google_dependencies()
         if not self.token_file.exists():
             return None
         credentials = Credentials.from_authorized_user_file(str(self.token_file), SCOPES)
@@ -47,6 +61,7 @@ class GoogleDocsIntegration:
         return credentials if credentials.valid else None
 
     def authorization_url(self) -> str:
+        self._require_google_dependencies()
         if not self.client_secret_file.exists():
             raise FileNotFoundError(
                 f"Google OAuth client file not found: {self.client_secret_file}"
@@ -59,6 +74,7 @@ class GoogleDocsIntegration:
         return url
 
     def finish_authorization(self, code: str) -> None:
+        self._require_google_dependencies()
         flow = Flow.from_client_secrets_file(str(self.client_secret_file), scopes=SCOPES)
         flow.redirect_uri = self.redirect_uri
         flow.fetch_token(code=code)
@@ -87,7 +103,6 @@ class GoogleDocsIntegration:
     def replace_document(self, document_id: str, text: str) -> None:
         document = self._service().documents().get(documentId=document_id).execute()
         end_index = document.get("body", {}).get("content", [{}])[-1].get("endIndex", 1)
-        # Google Docs requires leaving the final newline in the body.
         requests = []
         if end_index > 2:
             requests.append({"deleteContentRange": {"range": {"startIndex": 1, "endIndex": end_index - 1}}})
