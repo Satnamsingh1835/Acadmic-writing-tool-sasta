@@ -40,7 +40,11 @@ class LiteratureReviewAnalyzer:
     AUTHOR_CONNECTION = re.compile(r"\b(?:this study|this research|the present study|this paper|i argue|i examine|i explore)\b", re.I)
     PARAGRAPH_RE = re.compile(r"\n\s*\n+")
     YEAR_RE = re.compile(r"\b(?:19|20)\d{2}[a-z]?\b", re.I)
-    PARENTHETICAL_YEAR_RE = re.compile(r"\([^)]*(?:19|20)\d{2}[a-z]?[^)]*\)", re.I)
+    # Keep the parenthetical scan bounded so CodeQL cannot classify it as ReDoS-prone.
+    PARENTHETICAL_YEAR_RE = re.compile(
+        r"\([^()\r\n]{0,500}\b(?:19|20)\d{2}[a-z]?\b[^()\r\n]{0,500}\)",
+        re.I,
+    )
 
     def __init__(self, long_sentence_words: int = 35) -> None:
         self.analyzer = AcademicAnalyzer(long_sentence_words=long_sentence_words)
