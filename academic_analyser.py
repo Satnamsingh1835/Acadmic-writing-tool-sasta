@@ -1,282 +1,75 @@
-"""Diagnostics for literature-review argument structure.
+"""Cached document analysis for academic prose."""
+from __future__ import annotations
 
-The analyzer is heuristic. It identifies patterns for human review; it does not
-claim to understand or evaluate the author's scholarship.
-"""
 import re
 from collections import Counter
-from typing import Dict, List
+from dataclasses import dataclass
+from typing import Dict, List, Tuple
 
 
 class AcademicAnalyzer:
-    """Analyse prose for literature-review structure and style signals."""
-
-    FORMULAIC = (
-        "it is important to note that", "it is worth noting that",
-        "it should be noted that", "in today's world", "in the modern era",
-        "in the realm of", "a plethora of", "plays a crucial role in",
-        "plays a vital role in", "delve into", "deep dive into", "shed light on",
-    )
-    ABSOLUTES = (
-        "always", "never", "proves that", "clearly demonstrates",
-        "definitively shows", "undeniable", "unquestionably",
-    )
-    COMPARISON = (
-        "however", "whereas", "although", "by contrast", "in contrast",
-        "similarly", "likewise", "unlike", "while", "yet",
-    )
-    EVIDENCE = (
-        "according to", "finds", "found", "reports", "reported", "documents",
-        "documented", "observes", "observed", "estimates", "estimated",
-        "survey", "interview", "data", "evidence",
-    )
-    INTERPRETATION = (
-        "this suggests", "this indicates", "this means", "this demonstrates",
-        "this reveals", "therefore", "thus", "hence", "because",
-    )
-    GAP = (
-        "however, few", "however, little", "remains unclear", "remains underexplored",
-        "limited attention", "little attention", "has not examined",
-        "has received little", "gap in the literature", "underexplored",
-    )
-    CONTRIBUTION = (
-        "this study", "this research", "the present study", "this paper",
-        "this article", "i argue", "i examine", "i explore",
-    )
-
-    CITATION_AUTHOR_YEAR = re.compile(
-        r"\b[A-Z][A-Za-z'’-]+(?:\s+et al\.)?\s*\((?:19|20)\d{2}[a-z]?\)"
-    )
-    CITATION_PARENTHETICAL = re.compile(
-        r"\(([^()]*(?:19|20)\d{2}[a-z]?[^()]*)\)"
-    )
-    AUTHOR_YEAR_IN_PARENTHESIS = re.compile(
-        r"[A-Z][A-Za-z'’-]+(?:\s+et al\.)?,?\s+(?:19|20)\d{2}[a-z]?"
-    )
+    FORMULAIC = ("it is important to note that", "it is worth noting that", "it should be noted that", "in today's world", "in the modern era", "in the realm of", "a plethora of", "plays a crucial role in", "plays a vital role in", "delve into", "deep dive into", "shed light on")
+    ABSOLUTES = ("always", "never", "proves that", "clearly demonstrates", "definitively shows", "undeniable", "unquestionably")
+    COMPARISON = ("however", "whereas", "although", "by contrast", "in contrast", "similarly", "likewise", "unlike", "while", "yet")
+    EVIDENCE = ("according to", "finds", "found", "reports", "reported", "documents", "documented", "observes", "observed", "estimates", "estimated", "survey", "interview", "data", "evidence")
+    INTERPRETATION = ("this suggests", "this indicates", "this means", "this demonstrates", "this reveals", "therefore", "thus", "hence", "because")
+    GAP = ("however, few", "however, little", "remains unclear", "remains underexplored", "limited attention", "little attention", "has not examined", "has received little", "gap in the literature", "underexplored")
+    CONTRIBUTION = ("this study", "this research", "the present study", "this paper", "this article", "i argue", "i examine", "i explore")
+    SENTENCE_RE = re.compile(r"(?<=[.!?])\s+(?=[A-ZÀ-ÖØ-Þ])")
+    WORD_RE = re.compile(r"\b[\w'-]+\b")
+    CITATION_AUTHOR_YEAR = re.compile(r"\b[A-Z][A-Za-z'’-]+(?:\s+et al\.)?\s*\((?:19|20)\d{2}[a-z]?\)")
+    CITATION_PARENTHETICAL = re.compile(r"\(([^()]*(?:19|20)\d{2}[a-z]?[^()]*)\)")
+    AUTHOR_YEAR_IN_PARENTHESIS = re.compile(r"[A-Z][A-Za-z'’-]+(?:\s+et al\.)?,?\s+(?:19|20)\d{2}[a-z]?")
+    SOURCE_RE = re.compile(r"\b(?:according to|argues?|argue|finds?|found|shows?|show|reports?|reported|documents?|documented|observes?|observed|estimates?|estimated)\b", re.I)
 
     def __init__(self, long_sentence_words: int = 35) -> None:
         if long_sentence_words < 1:
             raise ValueError("long_sentence_words must be positive")
         self.long_sentence_words = long_sentence_words
 
-    @staticmethod
-    def _sentences(text: str) -> List[str]:
-        return [
-            s.strip()
-            for s in re.split(r"(?<=[.!?])\s+", text.strip())
-            if s.strip()
-        ]
+    @classmethod
+    def sentences(cls, text: str) -> List[str]:
+        return [s.strip() for s in cls.SENTENCE_RE.split(text.strip()) if s.strip()]
 
-    @staticmethod
-    def _words(text: str) -> List[str]:
-        return re.findall(r"\b[\w'-]+\b", text.lower())
+    @classmethod
+    def words(cls, text: str) -> List[str]:
+        return cls.WORD_RE.findall(text.lower())
 
-    @staticmethod
-    def _contains(sentence: str, signals: tuple[str, ...]) -> List[str]:
+    @classmethod
+    def contains(cls, sentence: str, signals: Tuple[str, ...]) -> List[str]:
         lower = sentence.lower()
-        return [
-            s for s in signals
-            if re.search(r"\b" + re.escape(s) + r"\b", lower)
-        ]
+        return [s for s in signals if re.search(r"\b" + re.escape(s) + r"\b", lower)]
 
     @classmethod
-    def _citations(cls, text: str) -> List[str]:
-        citations = []
-        citations.extend(m.group(0) for m in cls.CITATION_AUTHOR_YEAR.finditer(text))
-
+    def citations(cls, text: str) -> List[str]:
+        found = [m.group(0) for m in cls.CITATION_AUTHOR_YEAR.finditer(text)]
         for match in cls.CITATION_PARENTHETICAL.finditer(text):
-            for citation in cls.AUTHOR_YEAR_IN_PARENTHESIS.findall(match.group(1)):
-                citations.append(citation.strip())
-
-        return list(dict.fromkeys(citations))
-
-    @classmethod
-    def _citation_count(cls, text: str) -> int:
-        return len(cls._citations(text))
-
-    @classmethod
-    def _has_citation(cls, text: str) -> bool:
-        return bool(cls._citations(text))
-
-    @classmethod
-    def _source_attribution(cls, sentence: str) -> bool:
-        return bool(
-            cls.CITATION_AUTHOR_YEAR.search(sentence)
-            or re.search(
-                r"\b(?:according to|argues?|argue|finds?|found|shows?|show|"
-                r"reports?|reported|documents?|documented|observes?|observed|"
-                r"estimates?|estimated)\b",
-                sentence,
-                re.IGNORECASE,
-            )
-        )
-
-    def _repetitive_openings(self, sentences: List[str]) -> Dict[str, int]:
-        openings = []
-        for s in sentences:
-            words = self._words(s)
-            if words:
-                openings.append(" ".join(words[:2]))
-        counts = Counter(openings)
-        return {k: v for k, v in counts.items() if v > 1}
-
-    def _roles(self, sentences: List[str]) -> List[Dict[str, object]]:
-        roles = []
-        for i, sentence in enumerate(sentences, 1):
-            citation = self._has_citation(sentence)
-            evidence = self._contains(sentence, self.EVIDENCE)
-            interpretation = self._contains(sentence, self.INTERPRETATION)
-            comparison = self._contains(sentence, self.COMPARISON)
-            gap = self._contains(sentence, self.GAP)
-            contribution = self._contains(sentence, self.CONTRIBUTION)
-
-            if gap:
-                role = "gap"
-            elif comparison:
-                role = "comparison_or_synthesis"
-            elif evidence or citation:
-                role = "source_or_evidence"
-            elif interpretation:
-                role = "interpretation"
-            elif contribution:
-                role = "author_position"
-            else:
-                role = "claim_or_context"
-
-            roles.append({
-                "sentence": i,
-                "role": role,
-                "signals": {
-                    "citation": citation,
-                    "evidence": evidence,
-                    "interpretation": interpretation,
-                    "comparison": comparison,
-                    "gap": gap,
-                    "contribution": contribution,
-                },
-                "text": sentence,
-            })
-        return roles
+            found.extend(x.strip() for x in cls.AUTHOR_YEAR_IN_PARENTHESIS.findall(match.group(1)))
+        return list(dict.fromkeys(found))
 
     def analyse(self, text: str) -> Dict[str, object]:
         if not isinstance(text, str):
             raise TypeError("text must be a string")
-
-        sentences = self._sentences(text)
-        roles = self._roles(sentences)
+        sentences = self.sentences(text)
+        sentence_words = [self.words(s) for s in sentences]
+        sentence_citations = [self.citations(s) for s in sentences]
+        roles = []
+        for i, sentence in enumerate(sentences, 1):
+            evidence = self.contains(sentence, self.EVIDENCE)
+            interpretation = self.contains(sentence, self.INTERPRETATION)
+            comparison = self.contains(sentence, self.COMPARISON)
+            gap = self.contains(sentence, self.GAP)
+            contribution = self.contains(sentence, self.CONTRIBUTION)
+            role = "gap" if gap else "comparison_or_synthesis" if comparison else "source_or_evidence" if evidence or sentence_citations[i-1] else "interpretation" if interpretation else "author_position" if contribution else "claim_or_context"
+            roles.append({"sentence": i, "role": role, "signals": {"citation": bool(sentence_citations[i-1]), "evidence": evidence, "interpretation": interpretation, "comparison": comparison, "gap": gap, "contribution": contribution}, "text": sentence})
         role_names = [r["role"] for r in roles]
-
-        missing = []
-        for role in (
-            "source_or_evidence",
-            "interpretation",
-            "comparison_or_synthesis",
-        ):
-            if role not in role_names:
-                missing.append(role)
-
-        cited_source_claims = [
-            i for i, sentence in enumerate(sentences, 1)
-            if self._source_attribution(sentence) and self._has_citation(sentence)
-        ]
-        uncited_source_claims = [
-            i for i, sentence in enumerate(sentences, 1)
-            if self._source_attribution(sentence) and not self._has_citation(sentence)
-        ]
-
-        return {
-            "sentence_count": len(sentences),
-            "word_count": len(self._words(text)),
-            "formulaic_phrases": [
-                p for p in self.FORMULAIC if p in text.lower()
-            ],
-            "possible_overclaims": [
-                p for p in self.ABSOLUTES if p in text.lower()
-            ],
-            "repetitive_openings": self._repetitive_openings(sentences),
-            "long_sentences": [
-                {"sentence": i, "words": len(self._words(s)), "text": s}
-                for i, s in enumerate(sentences, 1)
-                if len(self._words(s)) >= self.long_sentence_words
-            ],
-            "citation_count": self._citation_count(text),
-            "citations": self._citations(text),
-            "citation_diagnostics": {
-                "cited_source_claims": len(cited_source_claims),
-                "possible_uncited_source_claims": uncited_source_claims,
-                "note": (
-                    "Possible flags only; some claims may be common knowledge "
-                    "or supported by a citation elsewhere in the paragraph."
-                ),
-            },
-            "roles": roles,
-            "literature_review_signals": {
-                "source_or_evidence": any(
-                    r["role"] == "source_or_evidence" for r in roles
-                ),
-                "interpretation": any(
-                    r["role"] == "interpretation" for r in roles
-                ),
-                "comparison_or_synthesis": any(
-                    r["role"] == "comparison_or_synthesis" for r in roles
-                ),
-                "gap": any(r["role"] == "gap" for r in roles),
-                "author_position": any(
-                    r["role"] == "author_position" for r in roles
-                ),
-                "possible_missing": missing,
-            },
-        }
+        openings = [" ".join(words[:2]) for words in sentence_words if words]
+        counts = Counter(openings)
+        lower_text = text.lower()
+        source_claims = [i for i, s in enumerate(sentences, 1) if (sentence_citations[i-1] or self.SOURCE_RE.search(s))]
+        cited_source_claims = [i for i in source_claims if sentence_citations[i-1]]
+        return {"sentence_count": len(sentences), "word_count": sum(map(len, sentence_words)), "formulaic_phrases": [p for p in self.FORMULAIC if p in lower_text], "possible_overclaims": [p for p in self.ABSOLUTES if p in lower_text], "repetitive_openings": {k: v for k, v in counts.items() if v > 1}, "long_sentences": [{"sentence": i, "words": len(words), "text": sentences[i-1]} for i, words in enumerate(sentence_words, 1) if len(words) >= self.long_sentence_words], "citation_count": len(self.citations(text)), "citations": self.citations(text), "citation_diagnostics": {"cited_source_claims": len(cited_source_claims), "possible_uncited_source_claims": [i for i in source_claims if not sentence_citations[i-1]], "note": "Possible flags only; some claims may be common knowledge or supported by a citation elsewhere in the paragraph."}, "roles": roles, "literature_review_signals": {"source_or_evidence": "source_or_evidence" in role_names, "interpretation": "interpretation" in role_names, "comparison_or_synthesis": "comparison_or_synthesis" in role_names, "gap": "gap" in role_names, "author_position": "author_position" in role_names, "possible_missing": [r for r in ("source_or_evidence", "interpretation", "comparison_or_synthesis") if r not in role_names]}}
 
     def summary(self, text: str) -> str:
         r = self.analyse(text)
-        messages = [f"{r['sentence_count']} sentences, {r['word_count']} words."]
-        if r["formulaic_phrases"]:
-            messages.append(
-                "Formulaic phrasing: " + ", ".join(r["formulaic_phrases"]) + "."
-            )
-        if r["possible_overclaims"]:
-            messages.append(
-                "Possible overclaiming: "
-                + ", ".join(r["possible_overclaims"]) + "."
-            )
-        if r["citation_diagnostics"]["possible_uncited_source_claims"]:
-            messages.append(
-                "Possible uncited source-based claims in sentence(s): "
-                + ", ".join(
-                    map(
-                        str,
-                        r["citation_diagnostics"]["possible_uncited_source_claims"],
-                    )
-                )
-                + "."
-            )
-        if r["repetitive_openings"]:
-            messages.append(
-                "Repeated openings: "
-                + ", ".join(
-                    f"{k} ({v})"
-                    for k, v in r["repetitive_openings"].items()
-                )
-                + "."
-            )
-        if r["long_sentences"]:
-            messages.append(
-                f"{len(r['long_sentences'])} long sentence(s) need review."
-            )
-        missing = r["literature_review_signals"]["possible_missing"]
-        if missing:
-            messages.append(
-                "Review paragraph logic for: " + ", ".join(missing) + "."
-            )
-        return " ".join(messages)
-
-
-if __name__ == "__main__":
-    sample = (
-        "Jodhka (2004) shows that caste remains connected to land relations. "
-        "This suggests that land cannot be treated separately from caste. "
-        "However, other studies emphasise regional variation. "
-        "This study examines how these relations are reconfigured."
-    )
-    print(AcademicAnalyzer().summary(sample))
+        return f"{r['sentence_count']} sentences, {r['word_count']} words."
