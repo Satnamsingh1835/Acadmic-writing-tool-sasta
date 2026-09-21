@@ -1,186 +1,132 @@
 # Academic Literature Review Assistant
 
-This project is now an **academic literature-review writing assistant**, not an AI detector or AI-detector bypass.
+A researcher-controlled academic writing assistant for literature reviews, research proposals, dissertations, and PhD application writing.
 
-It is designed for a researcher who is reading and drafting a literature review for a research proposal, dissertation, or PhD application. The system reads the writer's text, identifies possible grammar and academic-language problems, diagnoses paragraph-level literature-review structure, and produces a conservative refined version.
+The project combines a deterministic Python review engine with an R researcher workflow. It improves clarity, academic language, and literature-review reasoning without replacing the researcher's substantive judgement.
 
-## What the assistant does
+## What it does
 
-### Read your text
+- identifies formulaic academic phrasing and selected wordiness;
+- flags long or repetitive sentences;
+- identifies selected categorical claims that may need evidentiary checking;
+- recognises common author-year and parenthetical citation patterns;
+- provides paragraph-level literature-review prompts;
+- identifies possible relationships between studies: agreement, extension, contrast, qualification, and temporal change;
+- surfaces possible gaps and connections to the researcher's study;
+- produces a conservative refined version;
+- returns sentence-level suggestions with explanations;
+- keeps suggestions under researcher control through pending / accept / modify / reject decisions.
 
-The API currently accepts UTF-8 .txt files and pasted text. It preserves paragraph and sentence order.
+Diagnostics are heuristic editorial prompts. They are not a scholarly-quality score and do not prove that a paragraph is missing an argument.
 
-### Grammar and academic-language review
+## Researcher control
 
-It flags or edits:
+The engine does not silently apply substantive revisions. The researcher can accept a proposed revision, modify it in their own words, reject it, or leave it pending.
 
-- formulaic academic phrasing;
-- selected wordiness;
-- long sentences;
-- repeated sentence openings;
-- selected categorical claims that deserve evidentiary checking;
-- British academic spelling;
-- possible source-based claims without a nearby citation.
+The tool does not invent citations, evidence, literature, findings, interpretations, or theoretical arguments.
 
-These are editorial signals, not automatic declarations that a sentence is wrong.
+## Architecture
 
-### Literature-review reasoning
+R researcher workflow -> HTTP client -> FastAPI -> AcademicWritingEngine -> language editor + literature-review diagnostics + argument diagnostics -> researcher decisions
 
-The analyser looks for the following possible functions:
+The Python layer contains the domain logic. The R layer is the researcher-facing workflow.
 
-**source/evidence -> interpretation -> comparison/synthesis -> gap -> connection to the study**
+### Python modules
 
-This is not a rigid template. A paragraph does not need every function in every case. Missing signals produce questions for the researcher rather than invented prose.
-
-It also looks for relationships between sources, including:
-
-- agreement or extension;
-- contrast or tension;
-- qualification or conditionality;
-- temporal reconfiguration;
-- explicit debate language.
-
-### Conservative text refinement
-
-The editor can:
-
-- remove formulaic phrasing;
-- simplify selected wordiness;
-- use British English spelling;
-- optionally soften a small set of categorical expressions.
-
-It does not invent citations, evidence, literature, interpretations, research findings, or theoretical arguments.
-
-## PhD-admission writing target
-
-The project is intended to help produce **clearer, more precise, evidence-conscious academic prose suitable for serious PhD proposal development**.
-
-It does not certify that a text is "PhD level". Admission quality depends on the substance of the research question, engagement with literature, theoretical reasoning, evidence, originality, feasibility, and disciplinary expectations. The tool therefore separates language refinement from scholarly judgement.
-
-## API
-
-Install dependencies:
-
-    python -m pip install -r requirements.txt
-
-Run the API:
-
-    python -m uvicorn api:app --reload
-
-The interactive API documentation is available from the running server at /docs.
-
-### Health check
-
-    GET /health
-
-### Review pasted text
-
-    POST /review
-
-Example JSON:
-
-    {
-      "text": "Jodhka (2004) examines caste and land relations. However, Gupta (2000) identifies regional variation.",
-      "profile": "standard",
-      "include_refined_text": true
-    }
-
-### Review a text file
-
-    POST /review/file
-
-Upload a UTF-8 .txt file as multipart form data.
-
-Profiles:
-
-- conservative — formulaic-phrase removal and British spelling;
-- standard — conservative editing plus selected wordiness reduction;
-- polish — standard editing plus limited claim softening.
-
-The response contains:
-
-- refined_text;
-- suggestions — sentence-level issue, explanation, suggested revision, and confidence;
-- grammar_and_style;
-- literature_review;
-- safeguards.
-
-## Using it from R
-
-The API is intentionally HTTP-based so that an R workflow can call the same service.
-
-Example with httr2:
-
-    library(httr2)
-
-    text <- paste(readLines("proposal.txt", encoding = "UTF-8"), collapse = "\n")
-
-    result <- request("http://127.0.0.1:8000/review") |>
-      req_method("POST") |>
-      req_body_json(list(
-        text = text,
-        profile = "standard",
-        include_refined_text = TRUE
-      )) |>
-      req_perform() |>
-      resp_body_json()
-
-    cat(result$refined_text)
-
-For a file, use the /review/file endpoint with multipart upload.
-
-## Project architecture
-
-    text file / pasted text
-            |
-            v
-       API layer
-            |
-      +-----+-----+
-      |           |
-      v           v
-    language   literature-review
-     editor       analyser
-      |           |
-      +-----+-----+
-            |
-            v
-       review response
-       / refined text
-
-The current modules are:
-
-- humanize.py — conservative language editing and structural safeguards
+- humanize.py — conservative language editing and safeguards
 - advanced_humanize.py — editing profiles
 - academic_analyser.py — sentence-level grammar/style/citation signals
 - academic_suggestions.py — explainable sentence-level suggestions
-- literature_review.py — paragraph-level literature-review diagnostics
-- api.py — HTTP API for R and other clients
-- test_api.py — API regression tests
-- test_academic_humanizer.py — core regression tests
-- test_literature_review.py — literature-review regression tests
-- proposal.md — project design and roadmap
+- literature_review.py — literature-review diagnostics
+- argument_diagnostics.py — paragraph-level argument prompts
+- researcher_decisions.py — researcher-controlled decision logic
+- academic_engine.py — orchestration layer
+- api.py — HTTP interface for R and other clients
+- copilot_auto_refiner.py — optional experimental automation; not part of the core researcher workflow
+
+### R modules
+
+- R/academic_review.R — call the review API and retrieve suggestions
+- R/researcher_decisions.R — accept, modify, reject, or keep suggestions pending
+- R/workspace.R — create a standard academic project workspace
+- R/academic_workflow.R — researcher-facing helpers for health checks, reports, and saving drafts
+
+## Use it now from R
+
+1. From the repository root, install Python dependencies with: python -m pip install -r requirements.txt
+2. Start the API with: python -m uvicorn api:app --reload
+3. In R/RStudio, install httr2 once: install.packages("httr2")
+4. Source the R helpers: source("R/academic_review.R"); source("R/researcher_decisions.R"); source("R/workspace.R"); source("R/academic_workflow.R")
+
+Check the API:
+academic_assistant_health()
+
+Review text:
+review <- academic_review("It is important to note that caste shapes land relations. Gupta (2000) identifies regional variation.", profile = "standard")
+academic_print_review(review)
+
+Review a file:
+review <- academic_review_file("drafts/proposal.txt")
+academic_print_review(review)
+
+Save the deterministic refined text after inspecting safeguards:
+academic_save_refined(review, "feedback/proposal_refined.txt")
+
+Inspect suggestions:
+suggestions <- academic_suggestions(review)
+suggestions
+
+Accept, modify, or reject a suggestion:
+decision <- academic_decision(suggestions[[1]], decision = "accept")
+academic_apply_decision(suggestions[[1]]$original, suggestions[[1]], decision)
+
+For your own revision, use decision = "modify" and provide revised_text. A rejected or pending suggestion preserves the original.
+
+## Editing profiles
+
+- conservative — formulaic-phrase removal and British spelling
+- standard — conservative editing plus selected wordiness reduction
+- polish — standard editing plus limited claim softening
+
+Aliases are also supported by the Python engine: light, medium, and heavy.
+
+## API
+
+The service exposes GET /health, POST /review, and POST /review/file. Interactive documentation is available at /docs while the API is running.
+
+The API accepts pasted text and UTF-8 .txt uploads. Uploads are size-limited.
+
+## Standard workspace
+
+Create a new writing workspace with academic_workspace_create("my-project"). It creates drafts/, literature/, notes/, citations/, and feedback/.
+
+## Testing
+
+Python: run pytest from the repository root.
+R: install testthat once with install.packages("testthat"), then run Rscript -e 'source("tests/testthat.R")' or testthat::test_dir("tests/testthat") in R.
+
+The R GitHub Actions workflow runs the R tests on pushes and pull requests to main.
+
+## PhD-admission writing target
+
+The project supports clearer, more precise, evidence-conscious academic prose suitable for serious PhD proposal development. It does not certify that a text is PhD level. Scholarly quality depends on the research question, engagement with literature, theoretical reasoning, evidence, originality, feasibility, and disciplinary expectations.
 
 ## What it is not
 
-This is not:
+- not an AI detector or AI-detector bypass;
+- not a plagiarism checker;
+- not a citation generator;
+- not a source verifier;
+- not an automatic scholarly-quality scorer;
+- not a system that fabricates literature-review arguments.
 
-- an AI detector;
-- an AI-detector bypass;
-- a plagiarism checker;
-- a citation generator;
-- a source verifier;
-- an automatic scholarly-quality scorer;
-- a system that fabricates literature-review arguments.
-
-The writer remains responsible for checking every substantive claim, citation, interpretation, conceptual distinction, and final revision.
+The researcher remains responsible for checking every substantive claim, citation, interpretation, conceptual distinction, and final revision.
 
 ## Roadmap
 
-1. Stabilise the API and regression tests. ✓
-2. Return explicit sentence-level grammar/style suggestions with before/after explanations. ✓
-3. Add paragraph-level revision prompts tied to the writer's own argument.
-4. Add DOCX and PDF text extraction.
-5. Add an optional LLM-assisted refinement endpoint, clearly separated from deterministic editing.
-6. Add a small R client package/functions.
-7. Expand tests for citations, quotations, footnotes, headings, and multilingual text.
+1. Stabilise the hybrid Python + R workflow. In progress
+2. Strengthen endpoint and R integration tests. In progress
+3. Add DOCX and PDF text extraction.
+4. Add an optional LLM-assisted refinement endpoint, clearly separated from deterministic editing.
+5. Improve shared document parsing for paragraphs, sentences, citations, quotations, and headings.
+6. Expand multilingual and citation/footnote safeguards.
