@@ -78,3 +78,13 @@ The architecture takes inspiration from the public TencentCloud Octop project:
 - maintain a persistent project/workspace concept.
 
 This repository does **not** copy Octop's general-purpose assistant implementation. It adapts these architectural principles to academic writing.
+
+## Researcher decision layer
+
+Every generated revision is treated as a proposal. The API exposes a stable
+`suggestion_id` and a `decision` state (`pending`, `accept`, `modify`, or
+`reject`). A researcher can inspect the original, accept the proposal, modify
+it in their own words, or reject it and preserve the original.
+
+The system does not silently apply these decisions. Researcher judgement is an
+explicit part of the workflow.
