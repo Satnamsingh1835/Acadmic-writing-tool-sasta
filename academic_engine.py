@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Optional
 
 from academic_analyser import AcademicAnalyzer
 from academic_suggestions import AcademicSuggestionEngine
 from advanced_humanize import AdvancedHumanizer
+from argument_diagnostics import ArgumentDiagnostics
 from literature_review import LiteratureReviewAnalyzer
 
 
@@ -33,6 +35,7 @@ class AcademicWritingEngine:
         analyser: AcademicAnalyzer | None = None,
         suggestion_engine: AcademicSuggestionEngine | None = None,
         literature_review_analyser: LiteratureReviewAnalyzer | None = None,
+        argument_diagnostics: ArgumentDiagnostics | None = None,
     ) -> None:
         self.editor = editor or AdvancedHumanizer()
         self.analyser = analyser or AcademicAnalyzer()
@@ -40,6 +43,7 @@ class AcademicWritingEngine:
         self.literature_review_analyser = (
             literature_review_analyser or LiteratureReviewAnalyzer()
         )
+        self.argument_diagnostics = argument_diagnostics or ArgumentDiagnostics()
 
     def normalize_profile(self, profile: str) -> str:
         normalized = {
@@ -78,6 +82,9 @@ class AcademicWritingEngine:
             analysis=analysis,
         )
         safeguards = self.editor.language_only_diagnostics(text, refined)
+        paragraphs = [p.strip() for p in re.split(r"\n\s*\n+", text.strip()) if p.strip()]
+        for item, paragraph in zip(literature_review["paragraphs"], paragraphs):
+            item["argument_diagnostics"] = self.argument_diagnostics.analyse(paragraph)
 
         return ReviewResult(
             refined_text=refined if include_refined_text else None,
