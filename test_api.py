@@ -3,7 +3,7 @@ import unittest
 
 from fastapi.testclient import TestClient
 
-from api import app
+from api import MAX_TEXT_CHARS, MAX_UPLOAD_BYTES, app
 
 
 class TestAPI(unittest.TestCase):
@@ -14,7 +14,9 @@ class TestAPI(unittest.TestCase):
     def test_health(self):
         response = self.client.get("/health")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "ok")
+        payload = response.json()
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["max_text_chars"], MAX_TEXT_CHARS)
 
     def test_review_returns_structured_response_and_suggestions(self):
         response = self.client.post(
@@ -27,10 +29,8 @@ class TestAPI(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertIn("refined_text", payload)
-        self.assertIn("grammar_and_style", payload)
-        self.assertIn("literature_review", payload)
-        self.assertIn("suggestions", payload)
+        for key in ("refined_text", "grammar_and_style", "literature_review", "suggestions", "safeguards"):
+            self.assertIn(key, payload)
         self.assertTrue(payload["suggestions"])
 
     def test_review_can_omit_refined_text(self):
@@ -52,12 +52,17 @@ class TestAPI(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
+    def test_review_rejects_text_over_limit(self):
+        response = self.client.post(
+            "/review",
+            json={"text": "x" * (MAX_TEXT_CHARS + 1)},
+        )
+        self.assertEqual(response.status_code, 422)
+
     def test_review_file_accepts_utf8_txt(self):
         response = self.client.post(
             "/review/file",
-            files={"file": ("proposal.txt", io.BytesIO(
-                "Caste shapes land relations.".encode("utf-8")
-            ), "text/plain")},
+            files={"file": ("proposal.txt", io.BytesIO("Caste shapes land relations.".encode("utf-8")), "text/plain")},
         )
         self.assertEqual(response.status_code, 200)
         self.assertIn("refined_text", response.json())
@@ -72,9 +77,16 @@ class TestAPI(unittest.TestCase):
     def test_review_file_rejects_non_utf8(self):
         response = self.client.post(
             "/review/file",
-            files={"file": ("proposal.txt", io.BytesIO(b"\xff\xfe"), "text/plain")},
+            files={"file": ("proposal.txt", io.BytesIO(b"\\xff\\xfe"), "text/plain")},
         )
         self.assertEqual(response.status_code, 400)
+
+    def test_review_file_rejects_oversized_upload(self):
+        response = self.client.post(
+            "/review/file",
+            files={"file": ("proposal.txt", io.BytesIO(b"x" * (MAX_UPLOAD_BYTES + 1)), "text/plain")},
+        )
+        self.assertEqual(response.status_code, 413)
 
 
 if __name__ == "__main__":
