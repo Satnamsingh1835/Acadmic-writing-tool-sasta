@@ -8,6 +8,7 @@ from academic_analyser import AcademicAnalyzer
 from academic_suggestions import AcademicSuggestionEngine
 from advanced_humanize import AdvancedHumanizer
 from argument_diagnostics import ArgumentDiagnostics
+from researcher_decisions import DecisionLayer
 from literature_review import LiteratureReviewAnalyzer
 
 
@@ -36,6 +37,7 @@ class AcademicWritingEngine:
         suggestion_engine: AcademicSuggestionEngine | None = None,
         literature_review_analyser: LiteratureReviewAnalyzer | None = None,
         argument_diagnostics: ArgumentDiagnostics | None = None,
+        decision_layer: DecisionLayer | None = None,
     ) -> None:
         self.editor = editor or AdvancedHumanizer()
         self.analyser = analyser or AcademicAnalyzer()
@@ -44,6 +46,7 @@ class AcademicWritingEngine:
             literature_review_analyser or LiteratureReviewAnalyzer()
         )
         self.argument_diagnostics = argument_diagnostics or ArgumentDiagnostics()
+        self.decision_layer = decision_layer or DecisionLayer()
 
     def normalize_profile(self, profile: str) -> str:
         normalized = {
@@ -77,6 +80,10 @@ class AcademicWritingEngine:
             revised_text=refined,
             analysis=analysis,
         )
+        suggestions = [
+            {**item, **self.decision_layer.proposal(str(index), item)}
+            for index, item in enumerate(suggestions, 1)
+        ]
         literature_review = self.literature_review_analyser.analyse(
             text,
             analysis=analysis,
