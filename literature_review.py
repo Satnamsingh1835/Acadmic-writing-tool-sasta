@@ -1,4 +1,8 @@
-"""Paragraph-level diagnostics for academic literature reviews."""
+"""Paragraph-level diagnostics for academic literature reviews.
+
+This module does not write or score scholarship. It identifies common rhetorical
+roles and gives the author neutral editorial questions for manual revision.
+"""
 
 from __future__ import annotations
 
@@ -54,12 +58,13 @@ class LiteratureReviewAnalyzer:
     def _synthesis_diagnostics(self, paragraph: str) -> Dict[str, object]:
         source_count = self._source_count(paragraph)
         signals = {name: bool(pattern.search(paragraph)) for name, pattern in self.SYNTHESIS_PATTERNS.items()}
-        source_listing = source_count >= 2 and not any(signals.values())
+        explicit_synthesis = any(signals.values())
+        source_listing = source_count >= 2 and not explicit_synthesis
         return {
             "source_count": source_count,
             "signals": signals,
             "multiple_sources": source_count >= 2,
-            "explicit_synthesis_signal": any(signals.values()),
+            "explicit_synthesis_signal": explicit_synthesis,
             "possible_source_listing": source_listing,
             "editorial_prompt": (
                 "What relationship exists between the studies cited here? Identify agreement, disagreement, "
@@ -74,7 +79,7 @@ class LiteratureReviewAnalyzer:
         analysis: Optional[Dict[str, object]] = None,
     ) -> Dict[str, object]:
         """Analyse one paragraph, optionally reusing a precomputed report."""
-        report = analysis or self.analyzer.analyse(paragraph)
+        report = analysis if analysis is not None else self.analyzer.analyse(paragraph)
         signals = report["literature_review_signals"]
         synthesis = self._synthesis_diagnostics(paragraph)
         return {
@@ -136,3 +141,13 @@ class LiteratureReviewAnalyzer:
                     f"Paragraph {item['paragraph']}: multiple sources may be listed without an explicit synthesis relationship."
                 )
         return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    sample = (
+        "Jodhka (2004) examines caste and land relations. "
+        "This suggests that land relations cannot be separated from caste. "
+        "However, other studies identify regional variation.\n\n"
+        "This study examines how these relations are reconfigured."
+    )
+    print(LiteratureReviewAnalyzer().summary(sample))
