@@ -8,8 +8,8 @@ from academic_analyser import AcademicAnalyzer
 from academic_suggestions import AcademicSuggestionEngine
 from advanced_humanize import AdvancedHumanizer
 from argument_diagnostics import ArgumentDiagnostics
-from researcher_decisions import DecisionLayer
 from literature_review import LiteratureReviewAnalyzer
+from researcher_decisions import DecisionLayer
 
 
 @dataclass
