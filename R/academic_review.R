@@ -45,3 +45,11 @@ academic_review_file <- function(path, profile = "standard",
     httr2::req_perform() |>
     httr2::resp_body_json()
 }
+
+#' Extract researcher-controlled suggestions from a review response.
+#'
+#' @param review_response Result returned by academic_review().
+#' @return Suggestion list.
+academic_suggestions <- function(review_response) {
+  review_response$suggestions
+}
