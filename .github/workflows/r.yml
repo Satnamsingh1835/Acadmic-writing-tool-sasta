@@ -26,10 +26,19 @@ jobs:
           r-version: ${{ matrix.r-version }}
 
       - name: Install R dependencies
-        run: install.packages("httr2", repos = "https://cloud.r-project.org")
+        run: |
+          install.packages(
+            c("httr2", "testthat"),
+            repos = "https://cloud.r-project.org"
+          )
         shell: Rscript {0}
 
       - name: Check R source
         run: |
           Rscript -e 'parse(file = "R/academic_review.R")'
-          Rscript -e 'source("R/academic_review.R"); stopifnot(is.function(academic_review), is.function(academic_review_file))'
+          Rscript -e 'parse(file = "R/researcher_decisions.R")'
+          Rscript -e 'parse(file = "R/workspace.R")'
+          Rscript -e 'parse(file = "R/academic_workflow.R")'
+
+      - name: Run R tests
+        run: Rscript -e 'source("tests/testthat.R")'
