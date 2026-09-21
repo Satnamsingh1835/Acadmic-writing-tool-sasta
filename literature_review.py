@@ -105,7 +105,7 @@ class LiteratureReviewAnalyzer:
             "synthesis_diagnostics": synthesis,
         }
 
-    def analyse(self, text: str) -> Dict[str, object]:
+    def analyse(self, text: str, analysis: Dict[str, object] | None = None) -> Dict[str, object]:
         paragraphs = self._paragraphs(text)
         results = []
         for number, paragraph in enumerate(paragraphs, 1):
