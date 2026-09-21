@@ -29,7 +29,13 @@ class TestAPI(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        for key in ("refined_text", "grammar_and_style", "literature_review", "suggestions", "safeguards"):
+        for key in (
+            "refined_text",
+            "grammar_and_style",
+            "literature_review",
+            "suggestions",
+            "safeguards",
+        ):
             self.assertIn(key, payload)
         self.assertTrue(payload["suggestions"])
 
@@ -62,7 +68,13 @@ class TestAPI(unittest.TestCase):
     def test_review_file_accepts_utf8_txt(self):
         response = self.client.post(
             "/review/file",
-            files={"file": ("proposal.txt", io.BytesIO("Caste shapes land relations.".encode("utf-8")), "text/plain")},
+            files={
+                "file": (
+                    "proposal.txt",
+                    io.BytesIO("Caste shapes land relations.".encode("utf-8")),
+                    "text/plain",
+                )
+            },
         )
         self.assertEqual(response.status_code, 200)
         self.assertIn("refined_text", response.json())
@@ -70,21 +82,39 @@ class TestAPI(unittest.TestCase):
     def test_review_file_rejects_non_txt(self):
         response = self.client.post(
             "/review/file",
-            files={"file": ("proposal.pdf", io.BytesIO(b"not a pdf"), "application/pdf")},
+            files={
+                "file": (
+                    "proposal.pdf",
+                    io.BytesIO(b"not a pdf"),
+                    "application/pdf",
+                )
+            },
         )
         self.assertEqual(response.status_code, 400)
 
     def test_review_file_rejects_non_utf8(self):
         response = self.client.post(
             "/review/file",
-            files={"file": ("proposal.txt", io.BytesIO(b"\\xff\\xfe"), "text/plain")},
+            files={
+                "file": (
+                    "proposal.txt",
+                    io.BytesIO(b"\xff\xfe"),
+                    "text/plain",
+                )
+            },
         )
         self.assertEqual(response.status_code, 400)
 
     def test_review_file_rejects_oversized_upload(self):
         response = self.client.post(
             "/review/file",
-            files={"file": ("proposal.txt", io.BytesIO(b"x" * (MAX_UPLOAD_BYTES + 1)), "text/plain")},
+            files={
+                "file": (
+                    "proposal.txt",
+                    io.BytesIO(b"x" * (MAX_UPLOAD_BYTES + 1)),
+                    "text/plain",
+                )
+            },
         )
         self.assertEqual(response.status_code, 413)
 
