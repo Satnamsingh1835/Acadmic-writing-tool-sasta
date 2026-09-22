@@ -7,6 +7,7 @@ boundaries are defined consistently across the application.
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import List
 
 
@@ -17,7 +18,11 @@ _ABBREVIATIONS = {
     "u.s.", "u.k.", "a.m.", "p.m.", "et al.",
 }
 
-_WORD_RE = re.compile(r"\b[\w'-]+\b", re.UNICODE)
+_WORD_RE = re.compile(
+    r"[\w\u0300-\u036f\u0900-\u097F\u0A00-\u0A7F]+"
+    r"(?:['’\-][\w\u0300-\u036f\u0900-\u097F\u0A00-\u0A7F]+)*",
+    re.UNICODE,
+)
 _YEAR_RE = r"(?:19|20)\d{2}[a-z]?"
 _NARRATIVE_RE = re.compile(
     rf"\b[A-Z][A-Za-z'’-]+(?:\s+et al\.)?\s*\({_YEAR_RE}\)"
@@ -31,7 +36,9 @@ _AUTHOR_YEAR_RE = re.compile(
 def normalize_text(text: str) -> str:
     if not isinstance(text, str):
         raise TypeError("text must be a string")
-    return text.replace("\r\n", "\n").replace("\r", "\n")
+    return unicodedata.normalize(
+        "NFC", text.replace("\r\n", "\n").replace("\r", "\n")
+    )
 
 
 def split_paragraphs(text: str) -> List[str]:
@@ -46,18 +53,15 @@ def _is_abbreviation(text: str, end: int) -> bool:
     while start > 0 and (text[start - 1].isalnum() or text[start - 1] in ".'"):
         start -= 1
     token = text[start:end].lower()
-    return token in _ABBREVIATIONS or (
-        len(token) == 2 and token[0].isalpha() and token[1] == "."
-    )
+    if token in _ABBREVIATIONS:
+        return True
+    if token == "al.":
+        return text[max(0, start - 3):start].lower() == "et "
+    return len(token) == 2 and token[0].isalpha() and token[1] == "."
 
 
 def split_sentences(text: str) -> List[str]:
-    """Split sentences without breaking common academic abbreviations/decimals.
-
-    This is intentionally conservative: punctuation is a boundary only when
-    followed by whitespace and a plausible sentence start. It preserves the
-    original text inside each returned sentence.
-    """
+    """Split sentences conservatively around academic punctuation."""
     text = normalize_text(text).strip()
     if not text:
         return []
@@ -68,18 +72,29 @@ def split_sentences(text: str) -> List[str]:
             continue
         if char == "." and _is_abbreviation(text, i + 1):
             continue
-        if char == "." and i > 0 and i + 1 < len(text) and text[i - 1].isdigit() and text[i + 1].isdigit():
+        if (
+            char == "."
+            and i > 0
+            and i + 1 < len(text)
+            and text[i - 1].isdigit()
+            and text[i + 1].isdigit()
+        ):
             continue
+
         j = i + 1
+        while j < len(text) and text[j] in ""”’'»)]}":
+            j += 1
         if j >= len(text) or not text[j].isspace():
             continue
+
         while j < len(text) and text[j].isspace():
             j += 1
         if j >= len(text):
             boundaries.append(j)
             continue
+
         nxt = text[j]
-        if nxt.isupper() or nxt.isdigit() or nxt in '"“‘([—':
+        if nxt.isupper() or nxt.isdigit() or nxt in ""“‘([—":
             boundaries.append(j)
 
     if not boundaries:
@@ -99,6 +114,7 @@ def split_sentences(text: str) -> List[str]:
 
 
 def words(text: str) -> List[str]:
+    """Return Unicode-aware word tokens, including combining marks."""
     return _WORD_RE.findall(normalize_text(text).lower())
 
 
@@ -107,7 +123,9 @@ def author_year_citations(text: str) -> List[str]:
     text = normalize_text(text)
     found = [m.group(0).strip() for m in _NARRATIVE_RE.finditer(text)]
     for match in _PAREN_RE.finditer(text):
-        found.extend(m.group(0).strip() for m in _AUTHOR_YEAR_RE.finditer(match.group(0)))
+        found.extend(
+            m.group(0).strip() for m in _AUTHOR_YEAR_RE.finditer(match.group(0))
+        )
     return list(dict.fromkeys(found))
 
 
