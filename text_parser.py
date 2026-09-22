@@ -102,13 +102,18 @@ def words(text: str) -> List[str]:
     return _WORD_RE.findall(normalize_text(text).lower())
 
 
-def citations(text: str) -> List[str]:
-    """Return de-duplicated author-year citations detected in text."""
+def author_year_citations(text: str) -> List[str]:
+    """Extract narrative and parenthetical author-year citation forms."""
     text = normalize_text(text)
     found = [m.group(0).strip() for m in _NARRATIVE_RE.finditer(text)]
     for match in _PAREN_RE.finditer(text):
         found.extend(m.group(0).strip() for m in _AUTHOR_YEAR_RE.finditer(match.group(0)))
     return list(dict.fromkeys(found))
+
+
+def citations(text: str) -> List[str]:
+    """Return de-duplicated author-year citations detected in text."""
+    return author_year_citations(text)
 
 
 def has_citation(text: str) -> bool:
