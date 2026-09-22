@@ -105,7 +105,7 @@ Create a new writing workspace with academic_workspace_create("my-project"). It 
 Python: run pytest from the repository root.
 R: install testthat once with install.packages("testthat"), then run Rscript -e 'source("tests/testthat.R")' or testthat::test_dir("tests/testthat") in R.
 
-The R GitHub Actions workflow runs the R tests on pushes and pull requests to main.
+The R GitHub Actions workflow installs the system libraries needed by the R HTTP/testing dependencies, then parses the R source files and runs the standalone testthat suite on pushes and pull requests to main.
 
 ## PhD-admission writing target
 
@@ -124,9 +124,13 @@ The researcher remains responsible for checking every substantive claim, citatio
 
 ## Roadmap
 
-1. Stabilise the hybrid Python + R workflow. In progress
-2. Strengthen endpoint and R integration tests. In progress
-3. Add DOCX and PDF text extraction.
-4. Add an optional LLM-assisted refinement endpoint, clearly separated from deterministic editing.
-5. Improve shared document parsing for paragraphs, sentences, citations, quotations, and headings.
-6. Expand multilingual and citation/footnote safeguards.
+The repository is being developed through a controlled P1–P100 maintenance and research-engineering queue.
+
+Current completed foundation work includes the hybrid Python + R architecture, researcher-controlled decisions, deterministic review orchestration, Python tests, and an R test workflow. The next phases focus on shared parsing, citation safeguards, literature-review diagnostics, evaluation, integrations, and safety.
+
+Planned capabilities include:
+- stronger shared parsing for paragraphs, sentences, citations, quotations, and headings;
+- expanded multilingual and citation/footnote safeguards;
+- stronger R/API integration testing;
+- benchmark and regression evaluation;
+- optional LLM assistance kept separate from the deterministic engine.
