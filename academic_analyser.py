@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+
+from text_parser import citations as parse_citations
+from text_parser import split_sentences, words as parse_words
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
@@ -15,8 +18,6 @@ class AcademicAnalyzer:
     INTERPRETATION = ("this suggests", "this indicates", "this means", "this demonstrates", "this reveals", "therefore", "thus", "hence", "because")
     GAP = ("however, few", "however, little", "remains unclear", "remains underexplored", "limited attention", "little attention", "has not examined", "has received little", "gap in the literature", "underexplored")
     CONTRIBUTION = ("this study", "this research", "the present study", "this paper", "this article", "i argue", "i examine", "i explore")
-    SENTENCE_RE = re.compile(r"(?<=[.!?])\s+(?=[A-ZÀ-ÖØ-Þ])")
-    WORD_RE = re.compile(r"\b[\w'-]+\b")
     CITATION_AUTHOR_YEAR = re.compile(r"\b[A-Z][A-Za-z'’-]+(?:\s+et al\.)?\s*\((?:19|20)\d{2}[a-z]?\)")
     CITATION_PARENTHETICAL = re.compile(r"\(([^()]*(?:19|20)\d{2}[a-z]?[^()]*)\)")
     AUTHOR_YEAR_IN_PARENTHESIS = re.compile(r"[A-Z][A-Za-z'’-]+(?:\s+et al\.)?,?\s+(?:19|20)\d{2}[a-z]?")
@@ -29,11 +30,11 @@ class AcademicAnalyzer:
 
     @classmethod
     def sentences(cls, text: str) -> List[str]:
-        return [s.strip() for s in cls.SENTENCE_RE.split(text.strip()) if s.strip()]
+        return split_sentences(text)
 
     @classmethod
     def words(cls, text: str) -> List[str]:
-        return cls.WORD_RE.findall(text.lower())
+        return parse_words(text)
 
     @classmethod
     def contains(cls, sentence: str, signals: Tuple[str, ...]) -> List[str]:
@@ -41,11 +42,9 @@ class AcademicAnalyzer:
         return [s for s in signals if re.search(r"\b" + re.escape(s) + r"\b", lower)]
 
     @classmethod
+    @classmethod
     def citations(cls, text: str) -> List[str]:
-        found = [m.group(0) for m in cls.CITATION_AUTHOR_YEAR.finditer(text)]
-        for match in cls.CITATION_PARENTHETICAL.finditer(text):
-            found.extend(x.strip() for x in cls.AUTHOR_YEAR_IN_PARENTHESIS.findall(match.group(1)))
-        return list(dict.fromkeys(found))
+        return parse_citations(text)
 
     def analyse(self, text: str) -> Dict[str, object]:
         if not isinstance(text, str):
