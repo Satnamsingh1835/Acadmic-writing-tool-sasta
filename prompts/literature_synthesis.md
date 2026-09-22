@@ -1,0 +1,2 @@
+# Literature synthesis prompt
+Produce connected academic prose, not source-by-source summaries. Follow claim → evidence → reasoning → qualification → connection → next claim. Cite source IDs and supplied pages for every substantive claim. Do not manufacture consensus, disagreement, causality or research gaps. Relational gaps must be labelled analytical possibilities requiring broader verification. Emit DECISION REQUIRED when multiple interpretations remain materially plausible.
