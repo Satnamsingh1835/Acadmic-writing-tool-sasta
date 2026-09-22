@@ -1,140 +1,57 @@
-# Academic Literature Review Assistant
+# Academic Literature Review Assistant / Research Synthesist
 
-A researcher-controlled academic writing assistant for literature reviews, research proposals, dissertations, and PhD application writing.
-
-The project combines a deterministic Python review engine with an R researcher workflow. It improves clarity, academic language, and literature-review reasoning without replacing the researcher's substantive judgement.
+This repository now contains a modular Research Synthesist — Caste, Land, Commons & Social Boycott layer integrated with the existing researcher-controlled academic-writing system. It is designed for literature reviews and proposal development in sociology, anthropology, agrarian studies, caste studies, commons studies, Dalit studies, and rural political economy.
 
 ## What it does
 
-- identifies formulaic academic phrasing and selected wordiness;
-- flags long or repetitive sentences;
-- identifies selected categorical claims that may need evidentiary checking;
-- recognises common author-year and parenthetical citation patterns;
-- provides paragraph-level literature-review prompts;
-- identifies possible relationships between studies: agreement, extension, contrast, qualification, and temporal change;
-- surfaces possible gaps and connections to the researcher's study;
-- produces a conservative refined version;
-- returns sentence-level suggestions with explanations;
-- keeps suggestions under researcher control through pending / accept / modify / reject decisions.
+- extracts structured source records from TXT/Markdown and optionally PDF;
+- preserves page-level provenance when PDF text is available;
+- builds comparative literature matrices;
+- maps concepts and source-specific definitions;
+- maps source positions without manufacturing disagreement;
+- tracks historical-period evidence without flattening change and continuity;
+- identifies explicit source-level gaps and labels cross-cluster relational gaps as analytical possibilities requiring verification;
+- generates researchable questions from documented gaps;
+- audits source traceability, page/quotation risks, citation mismatch, and overclaiming;
+- exports matrices as JSON, CSV, Markdown, or SQLite.
 
-Diagnostics are heuristic editorial prompts. They are not a scholarly-quality score and do not prove that a paragraph is missing an argument.
+It does not invent citations, page numbers, quotations, findings, theoretical positions, consensus, causal mechanisms, or research gaps.
 
-## Researcher control
+## Existing-system integration
 
-The engine does not silently apply substantive revisions. The researcher can accept a proposed revision, modify it in their own words, reject it, or leave it pending.
+The existing Python/R academic-writing architecture remains intact. The new agent/ package is a research-analysis layer alongside academic_engine.py; language humanisation and researcher decision workflows are not replaced.
 
-The tool does not invent citations, evidence, literature, findings, interpretations, or theoretical arguments.
+## Install
 
-## Architecture
+Core runtime: python -m pip install -r requirements.txt
 
-R researcher workflow -> HTTP client -> FastAPI -> AcademicWritingEngine -> language editor + literature-review diagnostics + argument diagnostics -> researcher decisions
+PDF support: python -m pip install -r requirements-research.txt
 
-The Python layer contains the domain logic. The R layer is the researcher-facing workflow.
+## Commands
 
-### Python modules
+    python -m agent.cli source sources/paper.pdf --id S1
+    python -m agent.cli matrix sources/*.pdf --format csv -o outputs/matrix.csv
+    python -m agent.cli debate-map sources/*.pdf
+    python -m agent.cli concept-map sources/*.pdf
+    python -m agent.cli historical-synthesis sources/*.pdf
+    python -m agent.cli gap-analysis sources/*.pdf
+    python -m agent.cli research-questions sources/*.pdf
+    python -m agent.cli audit sources/*.pdf --text drafts/review.txt
 
-- humanize.py — conservative language editing and safeguards
-- advanced_humanize.py — editing profiles
-- academic_analyser.py — sentence-level grammar/style/citation signals
-- academic_suggestions.py — explainable sentence-level suggestions
-- literature_review.py — literature-review diagnostics
-- argument_diagnostics.py — paragraph-level argument prompts
-- researcher_decisions.py — researcher-controlled decision logic
-- academic_engine.py — orchestration layer
-- api.py — HTTP interface for R and other clients
-- copilot_auto_refiner.py — optional experimental automation; not part of the core researcher workflow
+The CLI is deterministic. A later model-assisted layer can be added behind the structured records, but model output must retain provenance and pass validation.
 
-### R modules
+## Evidence levels
 
-- R/academic_review.R — call the review API and retrieve suggestions
-- R/researcher_decisions.R — accept, modify, reject, or keep suggestions pending
-- R/workspace.R — create a standard academic project workspace
-- R/academic_workflow.R — researcher-facing helpers for health checks, reports, and saving drafts
+A = direct evidence; B = strong interpretation; C = cross-source synthesis; D = analytical possibility; E = speculation. Generated academic prose should normally use A–C. D–E must remain explicitly labelled.
 
-## Use it now from R
+## Literature architecture
 
-1. From the repository root, install Python dependencies with: python -m pip install -r requirements.txt
-2. Start the API with: python -m uvicorn api:app --reload
-3. In R/RStudio, install httr2 once: install.packages("httr2")
-4. Source the R helpers: source("R/academic_review.R"); source("R/researcher_decisions.R"); source("R/workspace.R"); source("R/academic_workflow.R")
+Configured clusters: LAND AND CASTE RELATIONS IN INDIA; COMMONS AND CASTE; CONCEPTUALISING SOCIAL BOYCOTT; LAND STRUGGLES IN PUNJAB. Sources may be cross-cutting rather than forced into one category.
 
-Check the API:
-academic_assistant_health()
+## Human-in-the-loop
 
-Review text:
-review <- academic_review("It is important to note that caste shapes land relations. Gupta (2000) identifies regional variation.", profile = "standard")
-academic_print_review(review)
-
-Review a file:
-review <- academic_review_file("drafts/proposal.txt")
-academic_print_review(review)
-
-Save the deterministic refined text after inspecting safeguards:
-academic_save_refined(review, "feedback/proposal_refined.txt")
-
-Inspect suggestions:
-suggestions <- academic_suggestions(review)
-suggestions
-
-Accept, modify, or reject a suggestion:
-decision <- academic_decision(suggestions[[1]], decision = "accept")
-academic_apply_decision(suggestions[[1]]$original, suggestions[[1]], decision)
-
-For your own revision, use decision = "modify" and provide revised_text. A rejected or pending suggestion preserves the original.
-
-## Editing profiles
-
-- conservative — formulaic-phrase removal and British spelling
-- standard — conservative editing plus selected wordiness reduction
-- polish — standard editing plus limited claim softening
-
-Aliases are also supported by the Python engine: light, medium, and heavy.
-
-## API
-
-The service exposes GET /health, POST /review, and POST /review/file. Interactive documentation is available at /docs while the API is running.
-
-The API accepts pasted text and UTF-8 .txt uploads. Uploads are size-limited.
-
-## Standard workspace
-
-Create a new writing workspace with academic_workspace_create("my-project"). It creates drafts/, literature/, notes/, citations/, and feedback/.
+Major interpretive choices must be surfaced as DECISION REQUIRED with evidence and alternative interpretations. Researchers remain responsible for verifying source records and accepting substantive interpretations.
 
 ## Testing
 
-Python: run pytest from the repository root.
-R: install testthat once with install.packages("testthat"), then run Rscript -e 'source("tests/testthat.R")' or testthat::test_dir("tests/testthat") in R.
-
-The R GitHub Actions workflow installs the system libraries needed by the R HTTP/testing dependencies, then parses the R source files and runs the standalone testthat suite on pushes and pull requests to main.
-
-## PhD-admission writing target
-
-The project supports clearer, more precise, evidence-conscious academic prose suitable for serious PhD proposal development. It does not certify that a text is PhD level. Scholarly quality depends on the research question, engagement with literature, theoretical reasoning, evidence, originality, feasibility, and disciplinary expectations.
-
-## What it is not
-
-- not an AI detector or AI-detector bypass;
-- not a plagiarism checker;
-- not a citation generator;
-- not a source verifier;
-- not an automatic scholarly-quality scorer;
-- not a system that fabricates literature-review arguments.
-
-The researcher remains responsible for checking every substantive claim, citation, interpretation, conceptual distinction, and final revision.
-
-## Roadmap
-
-The repository is being developed through a controlled P1–P100 maintenance and research-engineering queue.
-
-Current completed foundation work includes the hybrid Python + R architecture, researcher-controlled decisions, deterministic review orchestration, Python tests, and an R test workflow. The next phases focus on shared parsing, citation safeguards, literature-review diagnostics, evaluation, integrations, and safety.
-
-Planned capabilities include:
-- stronger shared parsing for paragraphs, sentences, citations, quotations, and headings;
-- expanded multilingual and citation/footnote safeguards;
-- stronger R/API integration testing;
-- benchmark and regression evaluation;
-- optional LLM assistance kept separate from the deterministic engine.
-
-## Analytical parsing
-
-The deterministic engine uses `text_parser.py` as the shared parsing layer for sentence boundaries, paragraph boundaries, word tokenisation, and author-year citation detection. This keeps the analytical modules consistent and makes parser behaviour independently testable.
+Run pytest. CI continues to run the existing Python and R suites. New tests cover page provenance, candidate relational-gap labelling, traceability failures, invalid pages, citation mismatch, overclaiming, and editable configuration.
