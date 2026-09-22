@@ -18,9 +18,6 @@ class AcademicAnalyzer:
     INTERPRETATION = ("this suggests", "this indicates", "this means", "this demonstrates", "this reveals", "therefore", "thus", "hence", "because")
     GAP = ("however, few", "however, little", "remains unclear", "remains underexplored", "limited attention", "little attention", "has not examined", "has received little", "gap in the literature", "underexplored")
     CONTRIBUTION = ("this study", "this research", "the present study", "this paper", "this article", "i argue", "i examine", "i explore")
-    CITATION_AUTHOR_YEAR = re.compile(r"\b[A-Z][A-Za-z'’-]+(?:\s+et al\.)?\s*\((?:19|20)\d{2}[a-z]?\)")
-    CITATION_PARENTHETICAL = re.compile(r"\(([^()]*(?:19|20)\d{2}[a-z]?[^()]*)\)")
-    AUTHOR_YEAR_IN_PARENTHESIS = re.compile(r"[A-Z][A-Za-z'’-]+(?:\s+et al\.)?,?\s+(?:19|20)\d{2}[a-z]?")
     SOURCE_RE = re.compile(r"\b(?:according to|argues?|argue|finds?|found|shows?|show|reports?|reported|documents?|documented|observes?|observed|estimates?|estimated)\b", re.I)
 
     def __init__(self, long_sentence_words: int = 35) -> None:
@@ -41,7 +38,6 @@ class AcademicAnalyzer:
         lower = sentence.lower()
         return [s for s in signals if re.search(r"\b" + re.escape(s) + r"\b", lower)]
 
-    @classmethod
     @classmethod
     def citations(cls, text: str) -> List[str]:
         return parse_citations(text)
