@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import re
 from typing import Optional
 
 from academic_analyser import AcademicAnalyzer
@@ -10,6 +9,7 @@ from advanced_humanize import AdvancedHumanizer
 from argument_diagnostics import ArgumentDiagnostics
 from literature_review import LiteratureReviewAnalyzer
 from researcher_decisions import DecisionLayer
+from text_parser import split_paragraphs
 
 
 @dataclass
@@ -89,7 +89,7 @@ class AcademicWritingEngine:
             analysis=analysis,
         )
         safeguards = self.editor.language_only_diagnostics(text, refined)
-        paragraphs = [p.strip() for p in re.split(r"\n\s*\n+", text.strip()) if p.strip()]
+        paragraphs = split_paragraphs(text)
         for item, paragraph in zip(literature_review["paragraphs"], paragraphs):
             item["argument_diagnostics"] = self.argument_diagnostics.analyse(paragraph)
 
