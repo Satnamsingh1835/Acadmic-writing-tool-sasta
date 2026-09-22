@@ -94,7 +94,7 @@ def split_sentences(text: str) -> List[str]:
             continue
 
         nxt = text[j]
-        if nxt.isupper() or nxt.isdigit() or nxt in ""“‘([—":
+        if nxt.isupper() or nxt.isdigit() or nxt in '"“‘([—':
             boundaries.append(j)
 
     if not boundaries:
