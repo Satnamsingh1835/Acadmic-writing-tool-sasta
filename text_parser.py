@@ -82,7 +82,7 @@ def split_sentences(text: str) -> List[str]:
             continue
 
         j = i + 1
-        while j < len(text) and text[j] in ""”’'»)]}":
+        while j < len(text) and text[j] in "\"”’'»)]}":
             j += 1
         if j >= len(text) or not text[j].isspace():
             continue
