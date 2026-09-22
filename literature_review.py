@@ -10,6 +10,7 @@ import re
 from typing import Dict, List
 
 from academic_analyser import AcademicAnalyzer
+from text_parser import split_paragraphs
 
 
 class LiteratureReviewAnalyzer:
@@ -44,7 +45,7 @@ class LiteratureReviewAnalyzer:
 
     @staticmethod
     def _paragraphs(text: str) -> List[str]:
-        return [p.strip() for p in re.split(r"\n\s*\n+", text.strip()) if p.strip()]
+        return split_paragraphs(text)
 
     @staticmethod
     def _author_signal(paragraph: str) -> bool:

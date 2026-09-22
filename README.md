@@ -134,3 +134,7 @@ Planned capabilities include:
 - stronger R/API integration testing;
 - benchmark and regression evaluation;
 - optional LLM assistance kept separate from the deterministic engine.
+
+## Analytical parsing
+
+The deterministic engine uses `text_parser.py` as the shared parsing layer for sentence boundaries, paragraph boundaries, word tokenisation, and author-year citation detection. This keeps the analytical modules consistent and makes parser behaviour independently testable.

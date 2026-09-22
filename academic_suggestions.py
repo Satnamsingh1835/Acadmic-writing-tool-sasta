@@ -3,6 +3,7 @@ import re
 from typing import Dict, List, Optional
 from advanced_humanize import AdvancedHumanizer
 from academic_analyser import AcademicAnalyzer
+from text_parser import split_sentences, words as parse_words
 
 class AcademicSuggestionEngine:
     def __init__(self, long_sentence_words: int = 35) -> None:
@@ -11,11 +12,11 @@ class AcademicSuggestionEngine:
 
     @staticmethod
     def _sentences(text: str) -> List[str]:
-        return AcademicAnalyzer.sentences(text)
+        return split_sentences(text)
 
     @staticmethod
     def _word_count(text: str) -> int:
-        return len(AcademicAnalyzer.words(text))
+        return len(parse_words(text))
 
     def suggest(self, text: str, profile: str = "standard", revised_text: Optional[str] = None, analysis: Optional[Dict[str, object]] = None) -> List[Dict[str, object]]:
         if not isinstance(text, str): raise TypeError("text must be a string")
