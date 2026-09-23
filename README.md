@@ -1,140 +1,201 @@
-# Academic Literature Review Assistant
+# Research Synthesist — Caste, Land, Commons & Social Boycott
 
-A researcher-controlled academic writing assistant for literature reviews, research proposals, dissertations, and PhD application writing.
+A researcher-controlled literature-synthesis agent integrated with the repository's existing academic-writing system. It is designed for sociology, anthropology, political economy, agrarian studies, caste studies, commons studies, Dalit studies and rural studies.
 
-The project combines a deterministic Python review engine with an R researcher workflow. It improves clarity, academic language, and literature-review reasoning without replacing the researcher's substantive judgement.
+## Purpose
 
-## What it does
+The system turns a corpus into an evidence-weighted map of arguments, concepts, mechanisms, evidence, disagreements, historical change, limitations, gaps and researchable questions. It is not a paper summariser: cross-source relationships are a first-class output.
 
-- identifies formulaic academic phrasing and selected wordiness;
-- flags long or repetitive sentences;
-- identifies selected categorical claims that may need evidentiary checking;
-- recognises common author-year and parenthetical citation patterns;
-- provides paragraph-level literature-review prompts;
-- identifies possible relationships between studies: agreement, extension, contrast, qualification, and temporal change;
-- surfaces possible gaps and connections to the researcher's study;
-- produces a conservative refined version;
-- returns sentence-level suggestions with explanations;
-- keeps suggestions under researcher control through pending / accept / modify / reject decisions.
+The configured research architecture covers:
 
-Diagnostics are heuristic editorial prompts. They are not a scholarly-quality score and do not prove that a paragraph is missing an argument.
+1. LAND AND CASTE RELATIONS IN INDIA
+2. COMMONS AND CASTE
+3. CONCEPTUALISING SOCIAL BOYCOTT
+4. LAND STRUGGLES IN PUNJAB
 
-## Researcher control
+A source can belong to multiple clusters. Classification is descriptive, not a forced taxonomy.
 
-The engine does not silently apply substantive revisions. The researcher can accept a proposed revision, modify it in their own words, reject it, or leave it pending.
+## Evidence discipline
 
-The tool does not invent citations, evidence, literature, findings, interpretations, or theoretical arguments.
+Every important synthesis claim uses one of five levels:
+
+- **A — DIRECT EVIDENCE:** explicitly stated or directly demonstrated by a source.
+- **B — STRONG INTERPRETATION:** a close interpretation strongly supported by source evidence.
+- **C — CROSS-SOURCE SYNTHESIS:** an insight produced by comparing sources.
+- **D — ANALYTICAL POSSIBILITY:** plausible but requiring investigation.
+- **E — SPECULATION:** insufficiently supported.
+
+Academic prose generated from the corpus should normally use A–C. D–E remain explicitly labelled.
+
+The system never fabricates pages, quotations, citations, findings, theoretical positions or consensus. Page numbers are accepted only when present in PDF page markers or supplied source records.
 
 ## Architecture
 
-R researcher workflow -> HTTP client -> FastAPI -> AcademicWritingEngine -> language editor + literature-review diagnostics + argument diagnostics -> researcher decisions
+```
+PDF / TXT / Markdown
+        |
+        v
+page-aware parsing
+        |
+        v
+SourceRecord[]
+        |
+        +--> literature matrix
+        +--> concept dictionary
+        +--> debate map
+        +--> historical map
+        +--> gap analysis
+        +--> research questions
+        +--> citation / argument audits
+        |
+        v
+optional provenance-constrained LLM synthesis
+        |
+        v
+validation + DECISION REQUIRED
+```
 
-The Python layer contains the domain logic. The R layer is the researcher-facing workflow.
+The new `agent/` package is deliberately separate from the existing `academic_engine.py`, `humanize.py`, `literature_review.py`, researcher-decision layer and R workflow. Existing language editing is reused rather than replaced.
 
-### Python modules
+## Installation
 
-- humanize.py — conservative language editing and safeguards
-- advanced_humanize.py — editing profiles
-- academic_analyser.py — sentence-level grammar/style/citation signals
-- academic_suggestions.py — explainable sentence-level suggestions
-- literature_review.py — literature-review diagnostics
-- argument_diagnostics.py — paragraph-level argument prompts
-- researcher_decisions.py — researcher-controlled decision logic
-- academic_engine.py — orchestration layer
-- api.py — HTTP interface for R and other clients
-- copilot_auto_refiner.py — optional experimental automation; not part of the core researcher workflow
+Core system:
 
-### R modules
+```bash
+python -m pip install -r requirements.txt
+```
 
-- R/academic_review.R — call the review API and retrieve suggestions
-- R/researcher_decisions.R — accept, modify, reject, or keep suggestions pending
-- R/workspace.R — create a standard academic project workspace
-- R/academic_workflow.R — researcher-facing helpers for health checks, reports, and saving drafts
+PDF extraction:
 
-## Use it now from R
+```bash
+python -m pip install -r requirements-research.txt
+```
 
-1. From the repository root, install Python dependencies with: python -m pip install -r requirements.txt
-2. Start the API with: python -m uvicorn api:app --reload
-3. In R/RStudio, install httr2 once: install.packages("httr2")
-4. Source the R helpers: source("R/academic_review.R"); source("R/researcher_decisions.R"); source("R/workspace.R"); source("R/academic_workflow.R")
+Optional model-assisted synthesis requires the existing LLM environment variables in `.env.example`:
 
-Check the API:
-academic_assistant_health()
+```
+LLM_API_KEY=
+LLM_BASE_URL=https://api.openai.com/v1
+LLM_MODEL=gpt-4o-mini
+```
 
-Review text:
-review <- academic_review("It is important to note that caste shapes land relations. Gupta (2000) identifies regional variation.", profile = "standard")
-academic_print_review(review)
+## Usage
 
-Review a file:
-review <- academic_review_file("drafts/proposal.txt")
-academic_print_review(review)
+Analyse one source:
 
-Save the deterministic refined text after inspecting safeguards:
-academic_save_refined(review, "feedback/proposal_refined.txt")
+```bash
+python -m agent.cli source literature/paper.pdf --id S1 -o outputs/S1.json
+```
 
-Inspect suggestions:
-suggestions <- academic_suggestions(review)
-suggestions
+Build the comparative matrix:
 
-Accept, modify, or reject a suggestion:
-decision <- academic_decision(suggestions[[1]], decision = "accept")
-academic_apply_decision(suggestions[[1]]$original, suggestions[[1]], decision)
+```bash
+python -m agent.cli matrix literature/*.pdf --format csv -o outputs/matrix.csv
+```
 
-For your own revision, use decision = "modify" and provide revised_text. A rejected or pending suggestion preserves the original.
+Available workflows:
 
-## Editing profiles
+```bash
+python -m agent.cli debate-map literature/*.pdf
+python -m agent.cli concept-map literature/*.pdf
+python -m agent.cli historical-synthesis literature/*.pdf
+python -m agent.cli gap-analysis literature/*.pdf
+python -m agent.cli research-questions literature/*.pdf
+python -m agent.cli audit literature/*.pdf --text drafts/review.txt
+python -m agent.cli citation-audit literature/*.pdf --text drafts/review.txt
+python -m agent.cli paragraph-audit literature/*.pdf --paragraph "Your paragraph here"
+python -m agent.cli human-edit drafts/review.txt --profile standard
+```
 
-- conservative — formulaic-phrase removal and British spelling
-- standard — conservative editing plus selected wordiness reduction
-- polish — standard editing plus limited claim softening
+For connected academic prose, configure `LLM_API_KEY` and run:
 
-Aliases are also supported by the Python engine: light, medium, and heavy.
+```bash
+python -m agent.cli synthesize literature/*.pdf -o outputs/literature_synthesis.json
+```
 
-## API
+The model receives only structured source records and their provenance. Its output is then validated. The deterministic pipeline remains usable without a model.
 
-The service exposes GET /health, POST /review, and POST /review/file. Interactive documentation is available at /docs while the API is running.
+## Source record
 
-The API accepts pasted text and UTF-8 .txt uploads. Uploads are size-limited.
+The schema tracks author, year, title, publication, discipline, geography, historical period, research question/problem, main and secondary arguments, concepts and definitions, theoretical framework, methodology/methods/data, case, evidence, mechanisms, actors, institutions, causal and historical claims, counterarguments, limitations, findings, contribution, explicit/implicit gaps, quotations, keywords, literature sections, relevance and uncertainty.
 
-## Standard workspace
+Plain-text extraction is conservative and intentionally leaves many fields unknown. Researchers can enrich the JSON record before synthesis.
 
-Create a new writing workspace with academic_workspace_create("my-project"). It creates drafts/, literature/, notes/, citations/, and feedback/.
+## Commons analysis
+
+Commons are decomposed into resource, institution, property regime, access, use, governance, rules, authority, boundaries, exclusion, commoning, social relations, power, caste, gender, class, state and market.
+
+The system does not assume that a commons is egalitarian, that community is homogeneous, or that collective ownership implies equal access.
+
+## Social boycott analysis
+
+The configured dimensions distinguish economic, labour and market exclusion; water, land and common-space access; social interaction; marriage; ritual and religious participation; village institutions; mobility; services; credit; everyday dignity; collective punishment; informal/formal enforcement; and state response.
+
+Legal definition, sociological definition, empirical practice and institutional mechanism must remain distinct.
+
+## Punjab evidence map
+
+The configuration tracks shamlat and panchayat land, redistribution, leasing, auction and dummy-bidding practices, Dalit mobilisation, dominant-caste resistance, village institutions, police, administration, courts, boycott, labour relations and agrarian movements. These are evidence categories, not predetermined causal relationships.
+
+## Research-gap method
+
+A gap is not accepted merely because a source says that more research is needed.
+
+The gap engine distinguishes empirical, conceptual, theoretical, methodological, geographical, historical, institutional, relational, process and scale gaps. Relational gaps are deliberately conservative: the system labels them analytical possibilities and asks for broader literature verification.
+
+## Human-in-the-loop
+
+Major interpretation choices must be surfaced as:
+
+```
+DECISION REQUIRED
+Question:
+Evidence:
+Possible interpretations:
+Why it matters:
+```
+
+The agent does not silently choose between materially different interpretations.
+
+## Exports
+
+Literature matrices support JSON, CSV, Markdown and SQLite. Source records and synthesis claims are JSON-serialisable. Generated outputs belong in `outputs/`.
+
+## Directory structure
+
+```
+agent/                 core extraction, synthesis, validation and CLI
+config/                editable research configuration
+prompts/               extraction and synthesis instructions
+schemas/               machine-readable record schemas
+workflows/             thin command wrappers
+data/                  researcher-owned source-data area
+outputs/               generated research artefacts
+tests/                 regression and quality-control tests
+docs/                   architecture and workflow documentation
+```
 
 ## Testing
 
-Python: run pytest from the repository root.
-R: install testthat once with install.packages("testthat"), then run Rscript -e 'source("tests/testthat.R")' or testthat::test_dir("tests/testthat") in R.
+Run:
 
-The R GitHub Actions workflow installs the system libraries needed by the R HTTP/testing dependencies, then parses the R source files and runs the standalone testthat suite on pushes and pull requests to main.
+```bash
+pytest -q
+python -m compileall agent workflows
+```
 
-## PhD-admission writing target
+CI also runs the existing R suite and Python suite. The new tests cover provenance, duplicate-source detection, invalid pages, citation mismatch, overclaiming, concept variation, relational-gap labelling and configuration loading.
 
-The project supports clearer, more precise, evidence-conscious academic prose suitable for serious PhD proposal development. It does not certify that a text is PhD level. Scholarly quality depends on the research question, engagement with literature, theoretical reasoning, evidence, originality, feasibility, and disciplinary expectations.
+## What it does not do
 
-## What it is not
+It does not certify truth, replace scholarly judgement, invent literature, create unsupported research gaps, decide whether a debate exists, or silently rewrite substantive arguments.
 
-- not an AI detector or AI-detector bypass;
-- not a plagiarism checker;
-- not a citation generator;
-- not a source verifier;
-- not an automatic scholarly-quality scorer;
-- not a system that fabricates literature-review arguments.
+Copyrighted papers should not be committed to the repository without permission.
 
-The researcher remains responsible for checking every substantive claim, citation, interpretation, conceptual distinction, and final revision.
+## Git workflow
 
-## Roadmap
+Work is developed on the `research-synthesist` branch. Review the diff and CI results before merging to `main`. No automatic push or merge is performed by the agent.
 
-The repository is being developed through a controlled P1–P100 maintenance and research-engineering queue.
+## Researcher-facing principle
 
-Current completed foundation work includes the hybrid Python + R architecture, researcher-controlled decisions, deterministic review orchestration, Python tests, and an R test workflow. The next phases focus on shared parsing, citation safeguards, literature-review diagnostics, evaluation, integrations, and safety.
-
-Planned capabilities include:
-- stronger shared parsing for paragraphs, sentences, citations, quotations, and headings;
-- expanded multilingual and citation/footnote safeguards;
-- stronger R/API integration testing;
-- benchmark and regression evaluation;
-- optional LLM assistance kept separate from the deterministic engine.
-
-## Analytical parsing
-
-The deterministic engine uses `text_parser.py` as the shared parsing layer for sentence boundaries, paragraph boundaries, word tokenisation, and author-year citation detection. This keeps the analytical modules consistent and makes parser behaviour independently testable.
+**Make the literature's reasoning visible, preserve provenance, connect sources carefully, and leave substantive interpretation with the researcher.**
