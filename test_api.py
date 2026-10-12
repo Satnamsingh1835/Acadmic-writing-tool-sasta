@@ -18,6 +18,48 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["max_text_chars"], MAX_TEXT_CHARS)
 
+    def test_editor_home_serves_web_application(self):
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("ScholarFlow Academic Editor", response.text)
+
+    def test_editor_assets_are_available(self):
+        response = self.client.get("/assets/app.js")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("/editor/rewrite", response.text)
+
+    def test_editor_capabilities_do_not_expose_credentials(self):
+        response = self.client.get("/editor/capabilities")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["default_profile"], "standard")
+        self.assertIn("llm_available", payload)
+        self.assertNotIn("api_key", payload)
+
+    def test_editor_rewrite_returns_revision_report(self):
+        response = self.client.post(
+            "/editor/rewrite",
+            json={
+                "text": "It is important to note that caste shapes land relations (Gupta, 2000).",
+                "profile": "standard",
+                "use_llm": False,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["provider"], "deterministic-local")
+        self.assertFalse(payload["used_llm"])
+        self.assertIn("stats", payload)
+        self.assertIn("literature_review", payload)
+        self.assertNotIn("important to note", payload["refined_text"].lower())
+
+    def test_editor_rewrite_rejects_unknown_profile(self):
+        response = self.client.post(
+            "/editor/rewrite",
+            json={"text": "Caste shapes access to land.", "profile": "unknown"},
+        )
+        self.assertEqual(response.status_code, 400)
+
     def test_review_returns_structured_response_and_suggestions(self):
         response = self.client.post(
             "/review",

@@ -1,32 +1,60 @@
 from __future__ import annotations
 
 import os
+from dataclasses import asdict
+from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from academic_engine import AcademicWritingEngine
+from editor_service import AcademicEditorService
 
 MAX_TEXT_CHARS = int(os.getenv("MAX_TEXT_CHARS", "500000"))
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", "2000000"))
+WEB_DIR = Path(__file__).resolve().parent / "web"
 
 app = FastAPI(
     title="Academic Literature Review Assistant API",
-    version="1.3.0",
+    version="2.0.0",
 )
 engine = AcademicWritingEngine()
+editor_service = AcademicEditorService(engine=engine)
+app.mount("/assets", StaticFiles(directory=WEB_DIR), name="assets")
 
 
 class ReviewRequest(BaseModel):
     text: str = Field(min_length=1, max_length=MAX_TEXT_CHARS)
-    profile: str = "standard"
+    profile: str = Field(default="standard", min_length=1, max_length=32)
     include_refined_text: bool = True
 
 
 class ReviewResponse(BaseModel):
     refined_text: Optional[str]
+    suggestions: list[dict]
+    grammar_and_style: dict
+    literature_review: dict
+    safeguards: dict
+
+
+class EditorRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=MAX_TEXT_CHARS)
+    profile: str = Field(default="standard", min_length=1, max_length=32)
+    use_llm: bool = False
+
+
+class EditorResponse(BaseModel):
+    original_text: str
+    refined_text: str
+    profile: str
+    provider: str
+    used_llm: bool
+    notices: list[str]
+    stats: dict[str, int | float]
     suggestions: list[dict]
     grammar_and_style: dict
     literature_review: dict
@@ -68,13 +96,42 @@ def review_text(
     )
 
 
+@app.get("/", include_in_schema=False)
+def editor_home():
+    return FileResponse(WEB_DIR / "index.html")
+
+
 @app.get("/health")
 def health():
     return {
         "status": "ok",
         "service": "academic-literature-review-assistant",
+        "version": app.version,
         "max_text_chars": MAX_TEXT_CHARS,
     }
+
+
+@app.get("/editor/capabilities")
+def editor_capabilities():
+    return {
+        **editor_service.capabilities(),
+        "max_text_chars": MAX_TEXT_CHARS,
+        "max_upload_bytes": MAX_UPLOAD_BYTES,
+    }
+
+
+@app.post("/editor/rewrite", response_model=EditorResponse)
+async def editor_rewrite(request: EditorRequest):
+    try:
+        result = await run_in_threadpool(
+            editor_service.rewrite,
+            request.text,
+            request.profile,
+            request.use_llm,
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return EditorResponse(**asdict(result))
 
 
 @app.post("/review", response_model=ReviewResponse)

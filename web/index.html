@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A researcher-controlled academic writing editor with citation safeguards and literature-review diagnostics.">
+  <title>ScholarFlow Academic Editor</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="/" aria-label="ScholarFlow home">
+      <span class="brand-mark" aria-hidden="true">S</span>
+      <span>
+        <strong>ScholarFlow</strong>
+        <small>Academic editor</small>
+      </span>
+    </a>
+    <div class="header-actions">
+      <span class="status-pill" id="engine-status">
+        <span class="status-dot" aria-hidden="true"></span>
+        Checking engine
+      </span>
+      <a class="icon-link" href="/docs" target="_blank" rel="noreferrer">API docs</a>
+    </div>
+  </header>
+
+  <main>
+    <section class="intro" aria-labelledby="page-title">
+      <div>
+        <p class="eyebrow">Researcher-controlled revision</p>
+        <h1 id="page-title">Strengthen the prose.<br><span>Keep the scholarship yours.</span></h1>
+      </div>
+      <p class="intro-copy">
+        Refine academic language, inspect argument structure, and preserve citations.
+        Every change remains a proposal for your review.
+      </p>
+    </section>
+
+    <section class="workspace" aria-label="Academic text editor">
+      <div class="workspace-toolbar">
+        <div class="mode-control" role="group" aria-label="Editing profile">
+          <span class="control-label">Rewrite mode</span>
+          <button class="mode-button" data-profile="conservative" type="button">
+            Light
+            <small>Minimal edits</small>
+          </button>
+          <button class="mode-button is-active" data-profile="standard" type="button">
+            Standard
+            <small>Clearer prose</small>
+          </button>
+          <button class="mode-button" data-profile="polish" type="button">
+            Polish
+            <small>Stronger edit</small>
+          </button>
+        </div>
+
+        <label class="ai-toggle" id="ai-toggle-label">
+          <input id="use-llm" type="checkbox">
+          <span class="toggle-track" aria-hidden="true"><span></span></span>
+          <span>
+            AI enhance
+            <small id="ai-caption">Checking provider…</small>
+          </span>
+        </label>
+      </div>
+
+      <div class="editor-grid">
+        <article class="editor-panel input-panel">
+          <header class="panel-header">
+            <div>
+              <span class="panel-step">01</span>
+              <h2>Original passage</h2>
+            </div>
+            <div class="panel-tools">
+              <button class="text-button" id="sample-button" type="button">Try sample</button>
+              <label class="text-button file-button" for="file-input">Upload .txt</label>
+              <input id="file-input" type="file" accept=".txt,text/plain" hidden>
+              <button class="text-button" id="clear-button" type="button">Clear</button>
+            </div>
+          </header>
+          <textarea
+            id="source-text"
+            aria-label="Original academic passage"
+            spellcheck="true"
+            maxlength="500000"
+            placeholder="Paste a paragraph, literature-review section, or academic draft here…"
+          ></textarea>
+          <footer class="panel-footer">
+            <span id="source-count">0 words · 0 characters</span>
+            <span>Ctrl/⌘ + Enter to refine</span>
+          </footer>
+        </article>
+
+        <article class="editor-panel output-panel" aria-live="polite">
+          <header class="panel-header">
+            <div>
+              <span class="panel-step">02</span>
+              <h2>Refined passage</h2>
+            </div>
+            <div class="panel-tools">
+              <button class="text-button" id="copy-button" type="button" disabled>Copy</button>
+              <button class="text-button" id="download-button" type="button" disabled>Download</button>
+            </div>
+          </header>
+          <div class="output-wrap">
+            <textarea
+              id="refined-text"
+              aria-label="Refined academic passage"
+              placeholder="Your refined passage will appear here. You can edit the result before copying it."
+            ></textarea>
+            <div class="output-empty" id="output-empty">
+              <span class="empty-icon" aria-hidden="true">Aa</span>
+              <strong>Ready when you are</strong>
+              <p>Select a mode and refine your passage. Citations and structure are checked automatically.</p>
+            </div>
+          </div>
+          <footer class="panel-footer">
+            <span id="output-count">0 words · 0 characters</span>
+            <span id="provider-label">Local editor</span>
+          </footer>
+        </article>
+      </div>
+
+      <div class="primary-action-row">
+        <div class="privacy-note">
+          <span aria-hidden="true">●</span>
+          Local mode does not send text to an external AI provider.
+        </div>
+        <button class="primary-button" id="refine-button" type="button">
+          <span class="button-label">Refine passage</span>
+          <span aria-hidden="true">→</span>
+        </button>
+      </div>
+    </section>
+
+    <section class="results" id="results" aria-labelledby="results-title" hidden>
+      <header class="results-header">
+        <div>
+          <p class="eyebrow">Revision report</p>
+          <h2 id="results-title">What changed—and what still needs judgement</h2>
+        </div>
+        <div class="stat-row" id="stat-row"></div>
+      </header>
+
+      <div class="notice-list" id="notice-list" aria-live="polite"></div>
+
+      <div class="result-tabs" role="tablist" aria-label="Revision report sections">
+        <button class="tab-button is-active" type="button" role="tab" aria-selected="true" data-tab="suggestions">Suggestions <span id="suggestion-count">0</span></button>
+        <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab="structure">Structure <span id="structure-count">0</span></button>
+        <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab="safeguards">Safeguards</button>
+      </div>
+
+      <div class="tab-panel" id="suggestions-panel" role="tabpanel"></div>
+      <div class="tab-panel" id="structure-panel" role="tabpanel" hidden></div>
+      <div class="tab-panel" id="safeguards-panel" role="tabpanel" hidden></div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <footer class="site-footer">
+    <p><strong>ScholarFlow</strong> supports academic judgement; it does not replace source verification or researcher review.</p>
+    <p>Deterministic by default · Optional AI · Citation-aware</p>
+  </footer>
+</body>
+</html>

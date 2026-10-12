@@ -1,3 +1,10 @@
-"""Run source extraction: python workflows/source_analysis.py FILE --id S1."""
-from agent.cli import main
-if __name__=="__main__":main()
+"""Run the source research workflow."""
+
+try:
+    from workflows._runner import run
+except ModuleNotFoundError:  # Direct execution from the workflows directory.
+    from _runner import run
+
+
+if __name__ == "__main__":
+    raise SystemExit(run("source"))

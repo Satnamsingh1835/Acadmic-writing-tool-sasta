@@ -18,6 +18,29 @@ class HumanizeAI:
         "groundbreaking", "seamless", "robust and comprehensive",
     )
 
+    AI_MARKER_REPLACEMENTS = (
+        (r"\bplays a (?:crucial|vital) role in shaping\b", "shapes"),
+        (r"\bplay a (?:crucial|vital) role in shaping\b", "shape"),
+        (r"\bplays a (?:crucial|vital) role in\b", "shapes"),
+        (r"\bplay a (?:crucial|vital) role in\b", "shape"),
+        (r"\bprovides? a deep dive into\b", "examines"),
+        (r"\bdelves? into\b", "examines"),
+        (r"\bdeep dive into\b", "detailed examination of"),
+        (r"\bsheds? light on\b", "examines"),
+        (r"\ba plethora of\b", "many"),
+        (r"\ba wide range of\b", "many"),
+        (r"\bin the realm of\b", "in"),
+        (r"\bin today's world\b", "currently"),
+        (r"\bin the modern era\b", "currently"),
+        (r"\bmultifaceted\b", "complex"),
+        (r"\brobust and comprehensive\b", "detailed"),
+    )
+    AI_MARKERS_TO_REMOVE = (
+        "it is important to note that",
+        "it is worth noting that",
+        "it should be noted that",
+    )
+
     DEFAULT_BRITISH = {
         r"\banalyzes\b": "analyses", r"\banalyze\b": "analyse",
         r"\bbehavior\b": "behaviour", r"\bcentered\b": "centred",
@@ -87,8 +110,16 @@ class HumanizeAI:
         return text[:1].upper() + text[1:] if text else text
 
     def remove_ai_markers(self, text: str) -> str:
-        for phrase in self.DEFAULT_AI_PHRASES:
-            text = re.sub(rf"\b{re.escape(phrase)}\s*[:,]?\s*", "", text, flags=re.IGNORECASE)
+        """Replace formulaic wording without leaving grammatical fragments."""
+        for pattern, replacement in self.AI_MARKER_REPLACEMENTS:
+            text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+        for phrase in self.AI_MARKERS_TO_REMOVE:
+            text = re.sub(
+                rf"\b{re.escape(phrase)}\s*[:,]?\s*",
+                "",
+                text,
+                flags=re.IGNORECASE,
+            )
         return self._capitalise_after_removal(text)
 
     def britishize(self, text: str) -> str:
@@ -117,20 +148,35 @@ class HumanizeAI:
     @staticmethod
     def language_only_diagnostics(original: str, revised: str) -> dict:
         """Check structural invariants after a language-only edit."""
-        sentence_count = lambda value: len(HumanizeAI._sentences(value))
-        paragraph_count = lambda value: len(
-            [p for p in re.split(r"\n\s*\n+", value.strip()) if p.strip()]
-        )
-        citations = lambda value: re.findall(
-            r"\([^()]{0,120}\b(?:19|20)\d{2}[a-z]?\b[^()]{0,120}\)",
-            value,
-        )
+        def sentence_count(value: str) -> int:
+            return len(HumanizeAI._sentences(value))
+
+        def paragraph_count(value: str) -> int:
+            return len(
+                [
+                    paragraph
+                    for paragraph in re.split(r"\n\s*\n+", value.strip())
+                    if paragraph.strip()
+                ]
+            )
+
+        def citation_list(value: str) -> list[str]:
+            return re.findall(
+                r"\([^()]{0,120}\b(?:19|20)\d{2}[a-z]?\b[^()]{0,120}\)",
+                value,
+            )
+
         return {
-            "paragraph_count_preserved": paragraph_count(original) == paragraph_count(revised),
+            "paragraph_count_preserved": (
+                paragraph_count(original) == paragraph_count(revised)
+            ),
             "sentence_count_preserved": sentence_count(original) == sentence_count(revised),
-            "citations_preserved": citations(original) == citations(revised),
+            "citations_preserved": citation_list(original) == citation_list(revised),
             "requires_manual_semantic_check": True,
-            "note": "Structural checks are safeguards, not proof that the author's meaning or argument is unchanged.",
+            "note": (
+                "Structural checks are safeguards, not proof that the author's "
+                "meaning or argument is unchanged."
+            ),
         }
 
     def humanize_literature_review(self, text: str) -> str:

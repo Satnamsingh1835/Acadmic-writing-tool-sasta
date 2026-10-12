@@ -79,7 +79,36 @@ LLM_BASE_URL=https://api.openai.com/v1
 LLM_MODEL=gpt-4o-mini
 ```
 
-## Usage
+## ScholarFlow web editor
+
+The repository includes a browser-based academic editor with side-by-side
+revision, three editing profiles, sentence-level suggestions, literature-review
+structure diagnostics, citation safeguards, text upload, copy and download.
+The deterministic local editor is the default.
+
+Start it with:
+
+```bash
+uvicorn api:app --reload
+```
+
+Then open `http://127.0.0.1:8000`. API documentation remains available at
+`/docs`.
+
+Optional model-assisted rewriting is enabled only when `LLM_API_KEY` is set.
+When the **AI enhance** switch is off, no passage is sent to an external model.
+When it is on, model output is rejected if it removes, changes, or introduces
+citation markers; provider failures fall back to the local revision.
+
+The editor endpoint is also available directly:
+
+```bash
+curl -X POST http://127.0.0.1:8000/editor/rewrite \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"Your academic passage.","profile":"standard","use_llm":false}'
+```
+
+## Research-synthesis CLI
 
 Analyse one source:
 
@@ -103,8 +132,9 @@ python -m agent.cli gap-analysis literature/*.pdf
 python -m agent.cli research-questions literature/*.pdf
 python -m agent.cli audit literature/*.pdf --text drafts/review.txt
 python -m agent.cli citation-audit literature/*.pdf --text drafts/review.txt
-python -m agent.cli paragraph-audit literature/*.pdf --paragraph "Your paragraph here"
+python -m agent.cli paragraph-audit --paragraph "Your paragraph here"
 python -m agent.cli human-edit drafts/review.txt --profile standard
+python -m agent.cli suggest drafts/review.txt --profile standard
 ```
 
 For connected academic prose, configure `LLM_API_KEY` and run:
@@ -177,12 +207,18 @@ docs/                   architecture and workflow documentation
 
 ## Testing
 
-Run:
+Install test tooling and run:
 
 ```bash
+python -m pip install -r requirements-dev.txt
 pytest -q
-python -m compileall agent workflows
+python -m compileall -q .
+python -m tools.repository_check
 ```
+
+The repository checker validates each source file individually: Python is
+compiled, JSON and YAML are parsed, and remaining tracked text files are checked
+for UTF-8 readability. R behavioural tests still require an R installation.
 
 CI also runs the existing R suite and Python suite. The new tests cover provenance, duplicate-source detection, invalid pages, citation mismatch, overclaiming, concept variation, relational-gap labelling and configuration loading.
 
