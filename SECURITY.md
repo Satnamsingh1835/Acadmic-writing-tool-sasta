@@ -20,6 +20,9 @@ endpoint or workflow, reproduction steps, impact, and any suggested mitigation.
   configured and the request explicitly enables model enhancement.
 - Provider credentials remain server-side and are never included in capability
   or review responses.
+- Revision receipts contain SHA-256 text digests rather than manuscript text.
+  Digests can still identify known text, so exported receipts should be treated
+  as research metadata.
 - Uploaded files are limited to UTF-8 `.txt` content and bounded by
   `MAX_UPLOAD_BYTES`.
 - Do not commit `.env`, provider keys, Google OAuth secrets, access tokens, or

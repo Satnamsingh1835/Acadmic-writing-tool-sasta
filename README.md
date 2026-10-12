@@ -83,8 +83,8 @@ LLM_MODEL=gpt-4o-mini
 
 The repository includes a browser-based academic editor with side-by-side
 revision, three editing profiles, sentence-level suggestions, literature-review
-structure diagnostics, citation safeguards, text upload, copy and download.
-The deterministic local editor is the default.
+structure diagnostics, citation safeguards, revision-receipt export, text upload,
+copy and download. The deterministic local editor is the default.
 
 Start it with:
 

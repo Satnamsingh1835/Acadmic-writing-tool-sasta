@@ -31,6 +31,8 @@ def test_local_editor_returns_rewrite_and_diagnostics():
     assert result.stats["original_words"] > 0
     assert result.safeguards["llm_citations_verified"] is True
     assert result.grammar_and_style["citation_count"] == 1
+    assert result.receipt["receipt_id"].startswith("revision:")
+    assert result.receipt["llm_requested"] is False
 
 
 def test_llm_request_falls_back_when_provider_is_not_configured():

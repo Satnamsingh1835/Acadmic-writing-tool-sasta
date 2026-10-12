@@ -34,6 +34,8 @@ class TestAPI(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["default_profile"], "standard")
         self.assertIn("llm_available", payload)
+        self.assertEqual(payload["receipt_schema_version"], "1.0")
+        self.assertTrue(payload["features"])
         self.assertNotIn("api_key", payload)
 
     def test_editor_rewrite_returns_revision_report(self):
@@ -51,6 +53,8 @@ class TestAPI(unittest.TestCase):
         self.assertFalse(payload["used_llm"])
         self.assertIn("stats", payload)
         self.assertIn("literature_review", payload)
+        self.assertIn("receipt", payload)
+        self.assertTrue(payload["receipt"]["residual_unknowns"])
         self.assertNotIn("important to note", payload["refined_text"].lower())
 
     def test_editor_rewrite_rejects_unknown_profile(self):

@@ -14,6 +14,7 @@ from typing import Callable
 
 from academic_engine import AcademicWritingEngine, ReviewResult
 from llm_tools import LLMProvider, configured_provider
+from revision_receipt import RECEIPT_SCHEMA_VERSION, build_revision_receipt
 from text_parser import citations, words
 
 ProviderFactory = Callable[[], LLMProvider | None]
@@ -34,6 +35,7 @@ class EditorResult:
     grammar_and_style: dict
     literature_review: dict
     safeguards: dict
+    receipt: dict[str, object]
 
 
 class AcademicEditorService:
@@ -52,11 +54,43 @@ class AcademicEditorService:
     def capabilities(self) -> dict[str, object]:
         """Return public capability information without exposing credentials."""
         provider = self.provider_factory()
+        llm_available = provider is not None
         return {
+            "contract_version": "2.0",
+            "receipt_schema_version": RECEIPT_SCHEMA_VERSION,
             "profiles": list(self.engine.editor.PROFILES),
-            "llm_available": provider is not None,
+            "llm_available": llm_available,
             "llm_provider": provider.name if provider else None,
             "default_profile": "standard",
+            "features": [
+                {
+                    "name": "deterministic-rewrite",
+                    "available": True,
+                    "reason": "available",
+                    "remediation": None,
+                    "effects": ["revises-text", "runs-diagnostics"],
+                },
+                {
+                    "name": "model-enhancement",
+                    "available": llm_available,
+                    "reason": (
+                        "available" if llm_available else "provider-not-configured"
+                    ),
+                    "remediation": (
+                        None
+                        if llm_available
+                        else "Set LLM_API_KEY, LLM_BASE_URL, and LLM_MODEL."
+                    ),
+                    "effects": ["external-network", "sends-passage-to-provider"],
+                },
+                {
+                    "name": "revision-receipt",
+                    "available": True,
+                    "reason": "available",
+                    "remediation": None,
+                    "effects": ["records-digests", "records-limitations"],
+                },
+            ],
         }
 
     @staticmethod
@@ -179,6 +213,18 @@ LOCAL_DRAFT:
         safeguards["llm_citations_verified"] = (
             self._reference_fingerprint(text) == self._reference_fingerprint(refined)
         )
+        receipt = build_revision_receipt(
+            original_text=text,
+            refined_text=refined,
+            profile=normalized_profile,
+            provider=provider_name,
+            llm_requested=use_llm,
+            llm_used=used_llm,
+            safeguards=safeguards,
+            grammar_and_style=review.grammar_and_style,
+            literature_review=review.literature_review,
+            notices=notices,
+        )
 
         return EditorResult(
             original_text=text,
@@ -192,4 +238,5 @@ LOCAL_DRAFT:
             grammar_and_style=review.grammar_and_style,
             literature_review=review.literature_review,
             safeguards=safeguards,
+            receipt=receipt,
         )

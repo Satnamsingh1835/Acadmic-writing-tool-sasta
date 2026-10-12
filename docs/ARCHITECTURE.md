@@ -44,6 +44,12 @@ provider-neutral adapter. Empty responses, excessive expansion, provider
 errors, and citation changes are rejected, so a valid local result is always
 available as the fallback. Credentials remain server-side.
 
+Every editor response also includes a deterministic revision receipt containing
+text digests, the operations performed, confidence labels, safeguard outcomes,
+limitations, and residual questions. The receipt contains no manuscript text
+and can be exported from the browser for audit or reproducibility. See
+[`REFERENCES.md`](REFERENCES.md) for the architectural references and boundaries.
+
 ## Core principle
 
 The system should **support the researcher's judgement rather than replace it**.

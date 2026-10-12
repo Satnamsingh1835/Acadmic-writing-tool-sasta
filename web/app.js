@@ -18,8 +18,10 @@
     suggestionsPanel: document.querySelector("#suggestions-panel"),
     structurePanel: document.querySelector("#structure-panel"),
     safeguardsPanel: document.querySelector("#safeguards-panel"),
+    receiptPanel: document.querySelector("#receipt-panel"),
     suggestionCount: document.querySelector("#suggestion-count"),
     structureCount: document.querySelector("#structure-count"),
+    unknownCount: document.querySelector("#unknown-count"),
     copyButton: document.querySelector("#copy-button"),
     downloadButton: document.querySelector("#download-button"),
     fileInput: document.querySelector("#file-input"),
@@ -205,6 +207,81 @@
     }
   }
 
+  function downloadText(content, filename, type = "text/plain;charset=utf-8") {
+    const blob = new Blob([content], { type });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function renderReceipt(receipt) {
+    elements.receiptPanel.replaceChildren();
+    const unknowns = receipt.residual_unknowns || [];
+    elements.unknownCount.textContent = String(unknowns.length);
+
+    const summary = createElement("div", "receipt-summary");
+    const summaryText = document.createElement("div");
+    summaryText.append(
+      createElement("span", "badge is-good", `Contract ${receipt.schema_version}`),
+      createElement("h3", "", "A reproducible record of this revision"),
+      createElement("code", "receipt-id", receipt.receipt_id),
+    );
+    const download = createElement("button", "text-button receipt-download", "Download JSON");
+    download.type = "button";
+    download.addEventListener("click", () => {
+      downloadText(
+        `${JSON.stringify(receipt, null, 2)}\n`,
+        "scholarflow-revision-receipt.json",
+        "application/json;charset=utf-8",
+      );
+    });
+    summary.append(summaryText, download);
+    elements.receiptPanel.append(summary);
+
+    const operationsTitle = createElement("h3", "section-title", "Operations performed");
+    const operationList = createElement("div", "insight-list");
+    (receipt.operations || []).forEach((operation) => {
+      const card = createElement("article", "insight-card");
+      const header = document.createElement("header");
+      const statusClass = operation.status === "completed" ? "is-good" : "is-warning";
+      header.append(
+        createElement("h3", "", readableRole(operation.name)),
+        createElement("span", `badge ${statusClass}`, operation.status),
+      );
+      card.append(header, createElement("p", "", operation.detail));
+      card.append(createElement("p", "receipt-meta", `Confidence: ${operation.confidence}`));
+      operationList.append(card);
+    });
+    elements.receiptPanel.append(operationsTitle, operationList);
+
+    const unknownTitle = createElement("h3", "section-title", "Questions that remain open");
+    const unknownList = createElement("div", "insight-list");
+    unknowns.forEach((unknown) => {
+      const card = createElement("article", "insight-card");
+      const header = document.createElement("header");
+      header.append(
+        createElement("h3", "", unknown.question),
+        createElement("span", "badge is-warning", unknown.severity),
+      );
+      card.append(header, createElement("p", "", unknown.recommended_action));
+      unknownList.append(card);
+    });
+    elements.receiptPanel.append(unknownTitle, unknownList);
+
+    const limitations = receipt.limitations || [];
+    if (limitations.length) {
+      const limitationTitle = createElement("h3", "section-title", "Limitations");
+      const list = createElement("ul", "limitation-list");
+      limitations.forEach((limitation) => {
+        list.append(createElement("li", "", limitation));
+      });
+      elements.receiptPanel.append(limitationTitle, list);
+    }
+  }
+
   function renderResult(result) {
     state.lastResult = result;
     elements.refined.value = result.refined_text;
@@ -220,6 +297,7 @@
     renderSuggestions(result.suggestions || []);
     renderStructure(result.literature_review || {});
     renderSafeguards(result.safeguards || {});
+    renderReceipt(result.receipt || {});
     elements.results.hidden = false;
     elements.results.scrollIntoView({ behavior: "smooth", block: "start" });
   }
@@ -296,13 +374,7 @@
 
   function downloadOutput() {
     if (!elements.refined.value) return;
-    const blob = new Blob([elements.refined.value], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "scholarflow-refined.txt";
-    link.click();
-    URL.revokeObjectURL(url);
+    downloadText(elements.refined.value, "scholarflow-refined.txt");
   }
 
   document.querySelectorAll(".mode-button").forEach((button) => {

@@ -20,7 +20,7 @@ WEB_DIR = Path(__file__).resolve().parent / "web"
 
 app = FastAPI(
     title="Academic Literature Review Assistant API",
-    version="2.0.0",
+    version="2.1.0",
 )
 engine = AcademicWritingEngine()
 editor_service = AcademicEditorService(engine=engine)
@@ -59,6 +59,7 @@ class EditorResponse(BaseModel):
     grammar_and_style: dict
     literature_review: dict
     safeguards: dict
+    receipt: dict[str, object]
 
 
 def review_text(
