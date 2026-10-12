@@ -1,91 +1,131 @@
+import io
 import unittest
 
-from literature_review import LiteratureReviewAnalyzer
+from fastapi.testclient import TestClient
+
+from api import MAX_TEXT_CHARS, MAX_UPLOAD_BYTES, app
 
 
-class TestLiteratureReviewAnalyzer(unittest.TestCase):
-    def setUp(self):
-        self.analyzer = LiteratureReviewAnalyzer()
+class TestAPI(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
 
-    def test_tracks_literature_review_flow(self):
-        text = (
-            "Jodhka (2004) examines caste and land relations. "
-            "This suggests that land relations cannot be separated from caste. "
-            "However, other studies identify regional variation. "
-            "This remains underexplored. "
-            "This study examines how these relations are reconfigured."
+    def test_health(self):
+        response = self.client.get("/health")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["max_text_chars"], MAX_TEXT_CHARS)
+
+    def test_review_returns_structured_response_and_suggestions(self):
+        response = self.client.post(
+            "/review",
+            json={
+                "text": "It is important to note that caste shapes land relations (Gupta, 2000).",
+                "profile": "standard",
+                "include_refined_text": True,
+            },
         )
-        report = self.analyzer.analyse(text)
-        signals = report["paragraphs"][0]["signals"]
-        for key in self.analyzer.REQUIRED_FLOW:
-            self.assertTrue(signals[key], key)
-        self.assertEqual(report["paragraphs"][0]["missing"], [])
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        for key in (
+            "refined_text",
+            "grammar_and_style",
+            "literature_review",
+            "suggestions",
+            "safeguards",
+        ):
+            self.assertIn(key, payload)
+        self.assertTrue(payload["suggestions"])
 
-    def test_flags_missing_synthesis(self):
-        text = (
-            "Jodhka (2004) examines caste and land relations. "
-            "The study reports unequal access to land."
+    def test_review_can_omit_refined_text(self):
+        response = self.client.post(
+            "/review",
+            json={"text": "Caste shapes land relations.", "include_refined_text": False},
         )
-        item = self.analyzer.analyse(text)["paragraphs"][0]
-        self.assertIn("interpretation", item["missing"])
-        self.assertIn("comparison_or_synthesis", item["missing"])
-        self.assertIn("gap", item["missing"])
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.json()["refined_text"])
 
-    def test_preserves_paragraph_units(self):
-        text = (
-            "Jodhka (2004) examines caste and land relations. "
-            "This suggests that land relations are material.\n\n"
-            "Other studies identify regional variation."
-        )
-        report = self.analyzer.analyse(text)
-        self.assertEqual(report["paragraph_count"], 2)
+    def test_review_rejects_empty_text(self):
+        response = self.client.post("/review", json={"text": "   "})
+        self.assertEqual(response.status_code, 400)
 
-    def test_flags_multiple_source_listing(self):
-        text = (
-            "Jodhka (2004) examines caste and land relations. "
-            "Gupta (2000) discusses caste hierarchy. "
-            "Judge (2014) examines Punjab."
+    def test_review_rejects_invalid_profile(self):
+        response = self.client.post(
+            "/review",
+            json={"text": "Caste shapes land relations.", "profile": "unknown"},
         )
-        synthesis = self.analyzer.analyse(text)["paragraphs"][0]["synthesis_diagnostics"]
-        self.assertTrue(synthesis["multiple_sources"])
-        self.assertTrue(synthesis["possible_source_listing"])
-        self.assertIsNotNone(synthesis["editorial_prompt"])
+        self.assertEqual(response.status_code, 400)
 
-    def test_recognises_explicit_comparison(self):
-        text = (
-            "Jodhka (2004) examines caste and land relations. "
-            "However, Gupta (2000) identifies regional variation."
+    def test_review_rejects_none_profile(self):
+        response = self.client.post(
+            "/review",
+            json={"text": "Caste shapes land relations.", "profile": None},
         )
-        synthesis = self.analyzer.analyse(text)["paragraphs"][0]["synthesis_diagnostics"]
-        self.assertTrue(synthesis["explicit_synthesis_signal"])
-        self.assertTrue(synthesis["signals"]["contrast_or_tension"])
+        self.assertEqual(response.status_code, 422)
 
-    def test_recognises_qualification_and_reconfiguration(self):
-        text = (
-            "Jodhka (2004) examines caste and land relations. "
-            "Gupta (2000) qualifies this account because the relationship varies over time."
+    def test_review_rejects_text_over_limit(self):
+        response = self.client.post(
+            "/review",
+            json={"text": "x" * (MAX_TEXT_CHARS + 1)},
         )
-        synthesis = self.analyzer.analyse(text)["paragraphs"][0]["synthesis_diagnostics"]
-        self.assertTrue(synthesis["signals"]["qualification_or_condition"])
-        self.assertTrue(synthesis["signals"]["temporal_reconfiguration"])
+        self.assertEqual(response.status_code, 422)
 
-    def test_does_not_invent_interpretation(self):
-        text = (
-            "Jodhka (2004) examines caste and land relations. "
-            "Gupta (2000) discusses caste hierarchy."
+    def test_review_file_accepts_utf8_txt(self):
+        response = self.client.post(
+            "/review/file",
+            files={
+                "file": (
+                    "proposal.txt",
+                    io.BytesIO("Caste shapes land relations.".encode("utf-8")),
+                    "text/plain",
+                )
+            },
         )
-        prompt = self.analyzer.analyse(text)["paragraphs"][0]["synthesis_diagnostics"]["editorial_prompt"]
-        self.assertIsNotNone(prompt)
-        self.assertNotIn("Jodhka", prompt)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("refined_text", response.json())
 
-    def test_prompt_absent_when_synthesis_signal_exists(self):
-        text = (
-            "Jodhka (2004) examines caste and land relations. "
-            "However, Gupta (2000) identifies regional variation."
+    def test_review_file_rejects_non_txt(self):
+        response = self.client.post(
+            "/review/file",
+            files={
+                "file": (
+                    "proposal.pdf",
+                    io.BytesIO(b"not a pdf"),
+                    "application/pdf",
+                )
+            },
         )
-        synthesis = self.analyzer.analyse(text)["paragraphs"][0]["synthesis_diagnostics"]
-        self.assertIsNone(synthesis["editorial_prompt"])
+        self.assertEqual(response.status_code, 400)
+
+    def test_review_file_rejects_non_utf8(self):
+        response = self.client.post(
+            "/review/file",
+            files={
+                "file": (
+                    "proposal.txt",
+                    io.BytesIO(b"\xff\xfe"),
+                    "text/plain",
+                )
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_review_file_rejects_oversized_upload(self):
+        response = self.client.post(
+            "/review/file",
+            files={
+                "file": (
+                    "proposal.txt",
+                    io.BytesIO(b"x" * (MAX_UPLOAD_BYTES + 1)),
+                    "text/plain",
+                )
+            },
+        )
+        self.assertEqual(response.status_code, 413)
 
 
 if __name__ == "__main__":
     unittest.main()
+
