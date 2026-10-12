@@ -128,7 +128,9 @@ LOCAL_DRAFT:
                 re.IGNORECASE,
             )
         )
-        markers.extend(re.findall(r"\[(?:\d+[,.]?\s*)+\]", text))
+        markers.extend(
+            re.findall(r"\[\d+(?:\s*[,;-]\s*\d+)*\]", text)
+        )
         return [(marker, text.count(marker)) for marker in dict.fromkeys(markers)]
 
     @classmethod
