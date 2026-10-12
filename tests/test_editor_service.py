@@ -93,6 +93,20 @@ def test_llm_output_with_removed_url_reference_is_rejected():
     assert "https://example.org/paper" in result.refined_text
 
 
+def test_llm_output_with_removed_numeric_citation_is_rejected():
+    provider = FakeProvider("The evidence supports the claim.")
+    service = AcademicEditorService(provider_factory=lambda: provider)
+
+    result = service.rewrite(
+        "The evidence supports the claim [12, 14-16].",
+        use_llm=True,
+    )
+
+    assert result.used_llm is False
+    assert "citation markers" in result.notices[0]
+    assert "[12, 14-16]" in result.refined_text
+
+
 def test_llm_failure_does_not_discard_local_revision():
     provider = FakeProvider(error=TimeoutError("provider timed out"))
     service = AcademicEditorService(provider_factory=lambda: provider)
