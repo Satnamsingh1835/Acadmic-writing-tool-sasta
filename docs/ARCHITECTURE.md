@@ -5,25 +5,50 @@ The project uses a small hybrid architecture rather than forcing every task into
 ## Design
 
 ```
-R research workflow
-      |
-      v
-academic_review.R
-      |
-      | HTTP
-      v
-Python academic engine
-      |
-      +--> AcademicAnalyzer
-      +--> AcademicSuggestionEngine
-      +--> AdvancedHumanizer
-      +--> LiteratureReviewAnalyzer
-      |
-      v
-structured review result
+ScholarFlow web editor       R research workflow
+          |                         |
+          | JSON / HTTP             v
+          +-----------------> academic_review.R
+          |                         |
+          +------------+------------+
+                       |
+                       v
+              FastAPI application
+                       |
+                       v
+              AcademicEditorService
+                       |
+          +------------+-------------------+
+          |            |                   |
+          v            v                   v
+  AcademicAnalyzer  AdvancedHumanizer  LiteratureReviewAnalyzer
+          |            |                   |
+          +------------+-------------------+
+                       |
+                       v
+            structured review result
+                       |
+             optional safeguarded LLM
 ```
 
-R is the researcher-facing layer. Python is used where the existing text-analysis and API implementation is strongest.
+The browser and R workflows are researcher-facing layers. Python provides the
+text-analysis, orchestration, API, and optional provider integration. The web
+surface contains no editing logic; it renders structured results from the
+application service.
+
+## Web editor and optional model use
+
+`AcademicEditorService` always runs the deterministic engine first. If model
+enhancement is requested and configured, the local draft is sent through the
+provider-neutral adapter. Empty responses, excessive expansion, provider
+errors, and citation changes are rejected, so a valid local result is always
+available as the fallback. Credentials remain server-side.
+
+Every editor response also includes a deterministic revision receipt containing
+text digests, the operations performed, confidence labels, safeguard outcomes,
+limitations, and residual questions. The receipt contains no manuscript text
+and can be exported from the browser for audit or reproducibility. See
+[`REFERENCES.md`](REFERENCES.md) for the architectural references and boundaries.
 
 ## Core principle
 

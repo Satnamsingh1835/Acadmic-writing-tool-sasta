@@ -1,21 +1,32 @@
 # Security Policy
 
-## Supported Versions
+## Supported version
 
-Use this section to tell people about which versions of your project are
-currently being supported with security updates.
+Security fixes are applied to the current `main` branch. Older snapshots are
+not maintained as separate release lines.
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 5.1.x   | :white_check_mark: |
-| 5.0.x   | :x:                |
-| 4.0.x   | :white_check_mark: |
-| < 4.0   | :x:                |
+## Reporting a vulnerability
 
-## Reporting a Vulnerability
+Please report vulnerabilities privately through GitHub's **Security** tab when
+available. Do not open a public issue containing credentials, private research
+material, unpublished manuscripts, or exploit details. Include the affected
+endpoint or workflow, reproduction steps, impact, and any suggested mitigation.
 
-Use this section to tell people how to report a vulnerability.
+## Data-handling notes
 
-Tell them where to go, how often they can expect to get an update on a
-reported vulnerability, what to expect if the vulnerability is accepted or
-declined, etc.
+- Deterministic editor mode processes text inside the running application and
+  does not call an external model provider.
+- Text is sent to an OpenAI-compatible provider only when `LLM_API_KEY` is
+  configured and the request explicitly enables model enhancement.
+- Provider credentials remain server-side and are never included in capability
+  or review responses.
+- Revision receipts contain SHA-256 text digests rather than manuscript text.
+  Digests can still identify known text, so exported receipts should be treated
+  as research metadata.
+- Uploaded files are limited to UTF-8 `.txt` content and bounded by
+  `MAX_UPLOAD_BYTES`.
+- Do not commit `.env`, provider keys, Google OAuth secrets, access tokens, or
+  copyrighted source documents without permission.
+
+Model output is untrusted. Citation and structural safeguards reduce risk but
+do not replace researcher verification.

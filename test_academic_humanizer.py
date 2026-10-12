@@ -14,6 +14,25 @@ class TestAcademicHumanizer(unittest.TestCase):
         text = "It is important to note that caste shapes land relations."
         self.assertEqual(self.core.humanize(text), "Caste shapes land relations.")
 
+    def test_replaces_formulaic_role_phrase_grammatically(self):
+        singular = "Caste plays a crucial role in shaping access to land."
+        plural = "Institutions play a vital role in shaping access to land."
+        self.assertEqual(self.core.humanize(singular), "Caste shapes access to land.")
+        self.assertEqual(self.core.humanize(plural), "Institutions shape access to land.")
+
+    def test_replaces_informal_research_metaphors(self):
+        text = "The article delves into land relations and sheds light on exclusion."
+        self.assertEqual(
+            self.core.humanize(text),
+            "The article examines land relations and examines exclusion.",
+        )
+
+    def test_replaces_generic_era_opening(self):
+        self.assertEqual(
+            self.core.humanize("In today's world, access remains unequal."),
+            "Currently, access remains unequal.",
+        )
+
     def test_simplifies_wordiness(self):
         text = "Land relations change due to the fact that institutions change."
         self.assertEqual(
@@ -89,6 +108,10 @@ class TestAcademicHumanizer(unittest.TestCase):
 class TestAcademicAnalyzer(unittest.TestCase):
     def setUp(self):
         self.analyzer = AcademicAnalyzer()
+
+    def test_rejects_empty_text(self):
+        with self.assertRaisesRegex(ValueError, "Text is empty"):
+            self.analyzer.analyse("   \n\t")
 
     def test_detects_formulaic_and_overclaiming(self):
         text = (

@@ -1,3 +1,10 @@
-"""Run language-only academic editing through the existing editor."""
-from agent.cli import main
-if __name__=="__main__": main()
+"""Run the human-edit research workflow."""
+
+try:
+    from workflows._runner import run
+except ModuleNotFoundError:  # Direct execution from the workflows directory.
+    from _runner import run
+
+
+if __name__ == "__main__":
+    raise SystemExit(run("human-edit"))

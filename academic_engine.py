@@ -1,31 +1,21 @@
 from __future__ import annotations
 
-import os
+from dataclasses import dataclass
 from typing import Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel, Field
-
-from academic_engine import AcademicWritingEngine
-
-MAX_TEXT_CHARS = int(os.getenv("MAX_TEXT_CHARS", "500000"))
-MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", "2000000"))
-
-app = FastAPI(
-    title="Academic Literature Review Assistant API",
-    version="1.3.0",
-)
-engine = AcademicWritingEngine()
+from academic_analyser import AcademicAnalyzer
+from academic_suggestions import AcademicSuggestionEngine
+from advanced_humanize import AdvancedHumanizer
+from argument_diagnostics import ArgumentDiagnostics
+from literature_review import LiteratureReviewAnalyzer
+from researcher_decisions import DecisionLayer
+from text_parser import split_paragraphs
 
 
-class ReviewRequest(BaseModel):
-    text: str = Field(min_length=1, max_length=MAX_TEXT_CHARS)
-    profile: str = "standard"
-    include_refined_text: bool = True
+@dataclass
+class ReviewResult:
+    """Structured result for one academic-writing review."""
 
-
-class ReviewResponse(BaseModel):
     refined_text: Optional[str]
     suggestions: list[dict]
     grammar_and_style: dict
@@ -33,90 +23,99 @@ class ReviewResponse(BaseModel):
     safeguards: dict
 
 
-def review_text(
-    text: str,
-    profile: str,
-    include_refined_text: bool,
-) -> ReviewResponse:
-    if not isinstance(text, str):
-        raise HTTPException(400, "Text must be a string.")
-    if not text.strip():
-        raise HTTPException(400, "Text is empty.")
-    if len(text) > MAX_TEXT_CHARS:
-        raise HTTPException(
-            413,
-            f"Text exceeds the {MAX_TEXT_CHARS}-character limit.",
-        )
-    if not isinstance(profile, str):
-        raise HTTPException(400, "Profile must be a string.")
+class AcademicWritingEngine:
+    """Orchestrate the specialist academic-writing components.
 
-    try:
-        result = engine.review(
+    The engine owns workflow composition; individual modules remain
+    deterministic and independently testable.
+    """
+
+    def __init__(
+        self,
+        editor: AdvancedHumanizer | None = None,
+        analyser: AcademicAnalyzer | None = None,
+        suggestion_engine: AcademicSuggestionEngine | None = None,
+        literature_review_analyser: LiteratureReviewAnalyzer | None = None,
+        argument_diagnostics: ArgumentDiagnostics | None = None,
+        decision_layer: DecisionLayer | None = None,
+    ) -> None:
+        self.editor = editor or AdvancedHumanizer()
+        self.analyser = analyser or AcademicAnalyzer()
+        self.suggestion_engine = suggestion_engine or AcademicSuggestionEngine()
+        self.literature_review_analyser = (
+            literature_review_analyser or LiteratureReviewAnalyzer()
+        )
+        self.argument_diagnostics = argument_diagnostics or ArgumentDiagnostics()
+        self.decision_layer = decision_layer or DecisionLayer()
+
+    def normalize_profile(self, profile: str) -> str:
+        if not isinstance(profile, str):
+            raise ValueError("Profile must be a string.")
+
+        normalized = {
+            "light": "conservative",
+            "medium": "standard",
+            "heavy": "polish",
+        }.get(profile.lower(), profile.lower())
+
+        if normalized not in self.editor.PROFILES:
+            choices = ", ".join(self.editor.PROFILES)
+            raise ValueError(
+                f"Unknown profile '{profile}'. Choose from: {choices}."
+            )
+        return normalized
+
+    def review(
+        self,
+        text: str,
+        profile: str = "standard",
+        include_refined_text: bool = True,
+    ) -> ReviewResult:
+        if not isinstance(text, str):
+            raise ValueError("Text must be a string.")
+        if not text.strip():
+            raise ValueError("Text is empty.")
+
+        profile_name = self.normalize_profile(profile)
+        refined = self.editor.humanize_literature_review(text, profile_name)
+        analysis = self.analyser.analyse(text)
+        suggestions = self.suggestion_engine.suggest(
             text,
-            profile=profile,
-            include_refined_text=include_refined_text,
+            profile_name,
+            revised_text=refined,
+            analysis=analysis,
         )
-    except (AttributeError, TypeError, ValueError) as exc:
-        raise HTTPException(400, str(exc)) from exc
-
-    return ReviewResponse(
-        refined_text=result.refined_text,
-        suggestions=result.suggestions,
-        grammar_and_style=result.grammar_and_style,
-        literature_review=result.literature_review,
-        safeguards=result.safeguards,
-    )
-
-
-@app.get("/health")
-def health():
-    return {
-        "status": "ok",
-        "service": "academic-literature-review-assistant",
-        "max_text_chars": MAX_TEXT_CHARS,
-    }
-
-
-@app.post("/review", response_model=ReviewResponse)
-def review(request: ReviewRequest):
-    return review_text(
-        request.text,
-        request.profile,
-        request.include_refined_text,
-    )
-
-
-@app.post("/review/file", response_model=ReviewResponse)
-async def review_file(
-    file: UploadFile = File(...),
-    profile: str = "standard",
-    include_refined_text: bool = True,
-):
-    if not file.filename or not file.filename.lower().endswith(".txt"):
-        raise HTTPException(
-            400,
-            "This endpoint accepts UTF-8 .txt files only.",
+        suggestions = [
+            {**item, **self.decision_layer.proposal(str(index), item)}
+            for index, item in enumerate(suggestions, 1)
+        ]
+        literature_review = self.literature_review_analyser.analyse(
+            text,
+            analysis=analysis,
         )
+        safeguards = self.editor.language_only_diagnostics(text, refined)
+        paragraphs = split_paragraphs(text)
+        paragraph_reports = literature_review.setdefault("paragraphs", [])
 
-    raw = await file.read(MAX_UPLOAD_BYTES + 1)
-    if len(raw) > MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            413,
-            f"Upload exceeds the {MAX_UPLOAD_BYTES}-byte limit.",
+        for index, paragraph in enumerate(paragraphs):
+            if index < len(paragraph_reports):
+                paragraph_reports[index]["argument_diagnostics"] = (
+                    self.argument_diagnostics.analyse(paragraph)
+                )
+            else:
+                paragraph_reports.append(
+                    {
+                        "paragraph": index + 1,
+                        "argument_diagnostics": self.argument_diagnostics.analyse(paragraph),
+                    }
+                )
+
+        literature_review["paragraph_count"] = len(paragraph_reports)
+
+        return ReviewResult(
+            refined_text=refined if include_refined_text else None,
+            suggestions=suggestions,
+            grammar_and_style=analysis,
+            literature_review=literature_review,
+            safeguards=safeguards,
         )
-
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise HTTPException(
-            400,
-            "The uploaded file must be UTF-8 encoded.",
-        ) from exc
-
-    return await run_in_threadpool(
-        review_text,
-        text,
-        profile,
-        include_refined_text,
-    )
-
