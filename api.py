@@ -38,6 +38,8 @@ def review_text(
     profile: str,
     include_refined_text: bool,
 ) -> ReviewResponse:
+    if not isinstance(text, str):
+        raise HTTPException(400, "Text must be a string.")
     if not text.strip():
         raise HTTPException(400, "Text is empty.")
     if len(text) > MAX_TEXT_CHARS:
@@ -45,6 +47,8 @@ def review_text(
             413,
             f"Text exceeds the {MAX_TEXT_CHARS}-character limit.",
         )
+    if not isinstance(profile, str):
+        raise HTTPException(400, "Profile must be a string.")
 
     try:
         result = engine.review(
@@ -52,7 +56,7 @@ def review_text(
             profile=profile,
             include_refined_text=include_refined_text,
         )
-    except ValueError as exc:
+    except (AttributeError, TypeError, ValueError) as exc:
         raise HTTPException(400, str(exc)) from exc
 
     return ReviewResponse(

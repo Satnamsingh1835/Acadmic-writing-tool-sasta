@@ -40,3 +40,18 @@ def test_engine_can_omit_refined_text():
     )
 
     assert result.refined_text is None
+
+
+def test_engine_does_not_drop_diagnostics_for_unmatched_paragraphs():
+    class EmptyLiteratureReviewAnalyzer:
+        def analyse(self, text, analysis=None):
+            return {"paragraph_count": 0, "paragraphs": []}
+
+    result = AcademicWritingEngine(
+        literature_review_analyser=EmptyLiteratureReviewAnalyzer()
+    ).review("First paragraph.\n\nSecond paragraph.")
+
+    paragraphs = result.literature_review["paragraphs"]
+    assert result.literature_review["paragraph_count"] == 2
+    assert [item["paragraph"] for item in paragraphs] == [1, 2]
+    assert all("argument_diagnostics" in item for item in paragraphs)

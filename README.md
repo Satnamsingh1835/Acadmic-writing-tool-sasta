@@ -1,92 +1,201 @@
-import unittest
+# Research Synthesist — Caste, Land, Commons & Social Boycott
 
-from literature_review import LiteratureReviewAnalyzer
+A researcher-controlled literature-synthesis agent integrated with the repository's existing academic-writing system. It is designed for sociology, anthropology, political economy, agrarian studies, caste studies, commons studies, Dalit studies and rural studies.
 
+## Purpose
 
-class TestLiteratureReviewAnalyzer(unittest.TestCase):
-    def setUp(self):
-        self.analyzer = LiteratureReviewAnalyzer()
+The system turns a corpus into an evidence-weighted map of arguments, concepts, mechanisms, evidence, disagreements, historical change, limitations, gaps and researchable questions. It is not a paper summariser: cross-source relationships are a first-class output.
 
-    def test_tracks_literature_review_flow(self):
-        text = (
-            "Jodhka (2004) examines caste and land relations. "
-            "This suggests that land relations cannot be separated from caste. "
-            "However, other studies identify regional variation. "
-            "This remains underexplored. "
-            "This study examines how these relations are reconfigured."
-        )
-        report = self.analyzer.analyse(text)
-        signals = report["paragraphs"][0]["signals"]
-        for key in self.analyzer.REQUIRED_FLOW:
-            self.assertTrue(signals[key], key)
-        self.assertEqual(report["paragraphs"][0]["missing"], [])
+The configured research architecture covers:
 
-    def test_flags_missing_synthesis(self):
-        text = (
-            "Jodhka (2004) examines caste and land relations. "
-            "The study reports unequal access to land."
-        )
-        item = self.analyzer.analyse(text)["paragraphs"][0]
-        self.assertIn("interpretation", item["missing"])
-        self.assertIn("comparison_or_synthesis", item["missing"])
-        self.assertIn("gap", item["missing"])
+1. LAND AND CASTE RELATIONS IN INDIA
+2. COMMONS AND CASTE
+3. CONCEPTUALISING SOCIAL BOYCOTT
+4. LAND STRUGGLES IN PUNJAB
 
-    def test_preserves_paragraph_units(self):
-        text = (
-            "Jodhka (2004) examines caste and land relations. "
-            "This suggests that land relations are material.\n\n"
-            "Other studies identify regional variation."
-        )
-        report = self.analyzer.analyse(text)
-        self.assertEqual(report["paragraph_count"], 2)
+A source can belong to multiple clusters. Classification is descriptive, not a forced taxonomy.
 
-    def test_flags_multiple_source_listing(self):
-        text = (
-            "Jodhka (2004) examines caste and land relations. "
-            "Gupta (2000) discusses caste hierarchy. "
-            "Judge (2014) examines Punjab."
-        )
-        synthesis = self.analyzer.analyse(text)["paragraphs"][0]["synthesis_diagnostics"]
-        self.assertTrue(synthesis["multiple_sources"])
-        self.assertTrue(synthesis["possible_source_listing"])
-        self.assertIsNotNone(synthesis["editorial_prompt"])
+## Evidence discipline
 
-    def test_recognises_explicit_comparison(self):
-        text = (
-            "Jodhka (2004) examines caste and land relations. "
-            "However, Gupta (2000) identifies regional variation."
-        )
-        synthesis = self.analyzer.analyse(text)["paragraphs"][0]["synthesis_diagnostics"]
-        self.assertTrue(synthesis["explicit_synthesis_signal"])
-        self.assertTrue(synthesis["signals"]["contrast_or_tension"])
+Every important synthesis claim uses one of five levels:
 
-    def test_recognises_qualification_and_reconfiguration(self):
-        text = (
-            "Jodhka (2004) examines caste and land relations. "
-            "Gupta (2000) qualifies this account because the relationship varies over time."
-        )
-        synthesis = self.analyzer.analyse(text)["paragraphs"][0]["synthesis_diagnostics"]
-        self.assertTrue(synthesis["signals"]["qualification_or_condition"])
-        self.assertTrue(synthesis["signals"]["temporal_reconfiguration"])
+- **A — DIRECT EVIDENCE:** explicitly stated or directly demonstrated by a source.
+- **B — STRONG INTERPRETATION:** a close interpretation strongly supported by source evidence.
+- **C — CROSS-SOURCE SYNTHESIS:** an insight produced by comparing sources.
+- **D — ANALYTICAL POSSIBILITY:** plausible but requiring investigation.
+- **E — SPECULATION:** insufficiently supported.
 
-    def test_does_not_invent_interpretation(self):
-        text = (
-            "Jodhka (2004) examines caste and land relations. "
-            "Gupta (2000) discusses caste hierarchy."
-        )
-        prompt = self.analyzer.analyse(text)["paragraphs"][0]["synthesis_diagnostics"]["editorial_prompt"]
-        self.assertIsNotNone(prompt)
-        self.assertNotIn("Jodhka", prompt)
+Academic prose generated from the corpus should normally use A–C. D–E remain explicitly labelled.
 
-    def test_prompt_absent_when_synthesis_signal_exists(self):
-        text = (
-            "Jodhka (2004) examines caste and land relations. "
-            "However, Gupta (2000) identifies regional variation."
-        )
-        synthesis = self.analyzer.analyse(text)["paragraphs"][0]["synthesis_diagnostics"]
-        self.assertIsNone(synthesis["editorial_prompt"])
+The system never fabricates pages, quotations, citations, findings, theoretical positions or consensus. Page numbers are accepted only when present in PDF page markers or supplied source records.
 
+## Architecture
 
-if __name__ == "__main__":
-    unittest.main()
+```
+PDF / TXT / Markdown
+        |
+        v
+page-aware parsing
+        |
+        v
+SourceRecord[]
+        |
+        +--> literature matrix
+        +--> concept dictionary
+        +--> debate map
+        +--> historical map
+        +--> gap analysis
+        +--> research questions
+        +--> citation / argument audits
+        |
+        v
+optional provenance-constrained LLM synthesis
+        |
+        v
+validation + DECISION REQUIRED
+```
 
+The new `agent/` package is deliberately separate from the existing `academic_engine.py`, `humanize.py`, `literature_review.py`, researcher-decision layer and R workflow. Existing language editing is reused rather than replaced.
+
+## Installation
+
+Core system:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+PDF extraction:
+
+```bash
+python -m pip install -r requirements-research.txt
+```
+
+Optional model-assisted synthesis requires the existing LLM environment variables in `.env.example`:
+
+```
+LLM_API_KEY=
+LLM_BASE_URL=https://api.openai.com/v1
+LLM_MODEL=gpt-4o-mini
+```
+
+## Usage
+
+Analyse one source:
+
+```bash
+python -m agent.cli source literature/paper.pdf --id S1 -o outputs/S1.json
+```
+
+Build the comparative matrix:
+
+```bash
+python -m agent.cli matrix literature/*.pdf --format csv -o outputs/matrix.csv
+```
+
+Available workflows:
+
+```bash
+python -m agent.cli debate-map literature/*.pdf
+python -m agent.cli concept-map literature/*.pdf
+python -m agent.cli historical-synthesis literature/*.pdf
+python -m agent.cli gap-analysis literature/*.pdf
+python -m agent.cli research-questions literature/*.pdf
+python -m agent.cli audit literature/*.pdf --text drafts/review.txt
+python -m agent.cli citation-audit literature/*.pdf --text drafts/review.txt
+python -m agent.cli paragraph-audit literature/*.pdf --paragraph "Your paragraph here"
+python -m agent.cli human-edit drafts/review.txt --profile standard
+```
+
+For connected academic prose, configure `LLM_API_KEY` and run:
+
+```bash
+python -m agent.cli synthesize literature/*.pdf -o outputs/literature_synthesis.json
+```
+
+The model receives only structured source records and their provenance. Its output is then validated. The deterministic pipeline remains usable without a model.
+
+## Source record
+
+The schema tracks author, year, title, publication, discipline, geography, historical period, research question/problem, main and secondary arguments, concepts and definitions, theoretical framework, methodology/methods/data, case, evidence, mechanisms, actors, institutions, causal and historical claims, counterarguments, limitations, findings, contribution, explicit/implicit gaps, quotations, keywords, literature sections, relevance and uncertainty.
+
+Plain-text extraction is conservative and intentionally leaves many fields unknown. Researchers can enrich the JSON record before synthesis.
+
+## Commons analysis
+
+Commons are decomposed into resource, institution, property regime, access, use, governance, rules, authority, boundaries, exclusion, commoning, social relations, power, caste, gender, class, state and market.
+
+The system does not assume that a commons is egalitarian, that community is homogeneous, or that collective ownership implies equal access.
+
+## Social boycott analysis
+
+The configured dimensions distinguish economic, labour and market exclusion; water, land and common-space access; social interaction; marriage; ritual and religious participation; village institutions; mobility; services; credit; everyday dignity; collective punishment; informal/formal enforcement; and state response.
+
+Legal definition, sociological definition, empirical practice and institutional mechanism must remain distinct.
+
+## Punjab evidence map
+
+The configuration tracks shamlat and panchayat land, redistribution, leasing, auction and dummy-bidding practices, Dalit mobilisation, dominant-caste resistance, village institutions, police, administration, courts, boycott, labour relations and agrarian movements. These are evidence categories, not predetermined causal relationships.
+
+## Research-gap method
+
+A gap is not accepted merely because a source says that more research is needed.
+
+The gap engine distinguishes empirical, conceptual, theoretical, methodological, geographical, historical, institutional, relational, process and scale gaps. Relational gaps are deliberately conservative: the system labels them analytical possibilities and asks for broader literature verification.
+
+## Human-in-the-loop
+
+Major interpretation choices must be surfaced as:
+
+```
+DECISION REQUIRED
+Question:
+Evidence:
+Possible interpretations:
+Why it matters:
+```
+
+The agent does not silently choose between materially different interpretations.
+
+## Exports
+
+Literature matrices support JSON, CSV, Markdown and SQLite. Source records and synthesis claims are JSON-serialisable. Generated outputs belong in `outputs/`.
+
+## Directory structure
+
+```
+agent/                 core extraction, synthesis, validation and CLI
+config/                editable research configuration
+prompts/               extraction and synthesis instructions
+schemas/               machine-readable record schemas
+workflows/             thin command wrappers
+data/                  researcher-owned source-data area
+outputs/               generated research artefacts
+tests/                 regression and quality-control tests
+docs/                   architecture and workflow documentation
+```
+
+## Testing
+
+Run:
+
+```bash
+pytest -q
+python -m compileall agent workflows
+```
+
+CI also runs the existing R suite and Python suite. The new tests cover provenance, duplicate-source detection, invalid pages, citation mismatch, overclaiming, concept variation, relational-gap labelling and configuration loading.
+
+## What it does not do
+
+It does not certify truth, replace scholarly judgement, invent literature, create unsupported research gaps, decide whether a debate exists, or silently rewrite substantive arguments.
+
+Copyrighted papers should not be committed to the repository without permission.
+
+## Git workflow
+
+Work is developed on the `research-synthesist` branch. Review the diff and CI results before merging to `main`. No automatic push or merge is performed by the agent.
+
+## Researcher-facing principle
+
+**Make the literature's reasoning visible, preserve provenance, connect sources carefully, and leave substantive interpretation with the researcher.**

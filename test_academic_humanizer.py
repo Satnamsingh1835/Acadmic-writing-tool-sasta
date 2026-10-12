@@ -90,6 +90,10 @@ class TestAcademicAnalyzer(unittest.TestCase):
     def setUp(self):
         self.analyzer = AcademicAnalyzer()
 
+    def test_rejects_empty_text(self):
+        with self.assertRaisesRegex(ValueError, "Text is empty"):
+            self.analyzer.analyse("   \n\t")
+
     def test_detects_formulaic_and_overclaiming(self):
         text = (
             "It is important to note that this proves that caste always "
