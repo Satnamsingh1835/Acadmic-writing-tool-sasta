@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ScholarFlow Research Library</title>
+  <link rel="stylesheet" href="/assets/library.css">
+  <script src="/assets/library.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div><a href="/" class="brand">ScholarFlow</a><span class="subtitle">Research library</span></div>
+    <a href="/" class="back">← Writing editor</a>
+  </header>
+  <main>
+    <section class="intro">
+      <p class="eyebrow">Local-first research workspace</p>
+      <h1>Find literature. Keep evidence traceable.</h1>
+      <p>Search your local catalogue, import Zotero metadata, index documents, and discover records from public scholarly metadata providers. Metadata is not full-text evidence.</p>
+      <div class="status" id="library-status" role="status">Checking local database…</div>
+    </section>
+    <section class="panel">
+      <h2>Search your library</h2>
+      <form id="library-search" class="search-form">
+        <label>Keywords, title, abstract or author<input id="query" name="q" maxlength="500" placeholder="e.g. social boycott, shamlat land, Dalit land rights"></label>
+        <div class="filters">
+          <label>Author contains<input id="author" maxlength="200"></label>
+          <label>Year<input id="year" type="number" min="1000" max="2200"></label>
+          <label>Item type<select id="item-type"><option value="">Any type</option><option>article</option><option>book</option><option>bookSection</option><option>thesis</option><option>report</option><option>paper-conference</option></select></label>
+          <label>Access status<select id="access-status"><option value="">Any status</option><option value="metadata_only">Metadata only</option><option value="open_full_text_linked">Open full-text link</option><option value="local_full_text_indexed">Local full text indexed</option></select></label>
+          <label>Sort<select id="sort"><option value="relevance">Recently updated</option><option value="newest">Newest year</option><option value="oldest">Oldest year</option><option value="title">Title A–Z</option></select></label>
+        </div>
+        <button type="submit">Search library</button>
+      </form>
+      <div id="library-results" class="results" aria-live="polite"></div>
+    </section>
+    <div class="grid">
+      <section class="panel">
+        <h2>Import Zotero references</h2>
+        <p>Read-only import. Start with the local Zotero API; the Web API requires credentials configured outside the repository.</p>
+        <label>Source<select id="zotero-source"><option value="local">Zotero Desktop (local API)</option><option value="web">Zotero Web API</option></select></label>
+        <label>Optional collection key<input id="zotero-collection" maxlength="100" placeholder="Leave blank for library items"></label>
+        <button id="zotero-import" type="button">Import metadata</button>
+        <p class="hint" id="zotero-result"></p>
+        <hr>
+        <label>Import a CSL JSON export<input id="csl-file" type="file" accept=".json,application/json"></label>
+        <button id="csl-import" type="button">Import selected JSON</button>
+        <p class="hint" id="csl-result"></p>
+      </section>
+      <section class="panel">
+        <h2>Index a local document</h2>
+        <p>Files are saved in your local ScholarFlow data directory. Indexed text may be retrieved as candidate evidence; page numbers are only shown when extracted from a PDF page.</p>
+        <form id="document-form">
+          <label>Document<input type="file" id="document-file" accept=".pdf,.txt,.md,.html,.htm,.docx" required></label>
+          <label>Optional linked work ID<input id="work-id" maxlength="100" placeholder="Copy an ID from a search result"></label>
+          <label>Source URL (optional)<input id="source-url" type="url" maxlength="2000"></label>
+          <label>Licence/access note (optional)<input id="licence" maxlength="500" placeholder="e.g. user-provided copy; verify usage rights"></label>
+          <button type="submit">Index document</button>
+        </form>
+        <p class="hint" id="document-result"></p>
+      </section>
+    </div>
+    <section class="panel">
+      <h2>Discover scholarly metadata</h2>
+      <p>Crossref and OpenAlex are queried only after you submit a search. Results are citation candidates, not proof a source supports your claim.</p>
+      <form id="discovery-form" class="search-form">
+        <label>Search topic<input id="discovery-query" required minlength="2" maxlength="500" placeholder="land, caste and village commons"></label>
+        <label>Provider<select id="provider"><option value="crossref">Crossref</option><option value="openalex">OpenAlex</option></select></label>
+        <button type="submit">Discover metadata</button>
+      </form>
+      <div id="discovery-results" class="results" aria-live="polite"></div>
+      <div class="settings">
+        <label><input id="offline" type="checkbox"> Offline mode (use cache only)</label>
+        <label><input id="crossref-enabled" type="checkbox" checked> Crossref enabled</label>
+        <label><input id="openalex-enabled" type="checkbox" checked> OpenAlex enabled</label>
+        <button id="save-settings" type="button">Save discovery settings</button>
+        <span id="settings-result" class="hint"></span>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>Search indexed passages</h2>
+      <form id="passage-form" class="search-form">
+        <label>Text to find<input id="passage-query" minlength="2" maxlength="500" required></label>
+        <button type="submit">Find passages</button>
+      </form>
+      <div id="passage-results" class="results" aria-live="polite"></div>
+    </section>
+    <section class="panel">
+      <h2>Literature matrix</h2>
+      <p>The matrix records candidate claims and supporting passages; it does not establish that a source supports the claim. Add a row after selecting a work from search results.</p>
+      <form id="matrix-form">
+        <label>Work ID<input id="matrix-work-id" required maxlength="100"></label>
+        <label>Research question<input id="matrix-question" required maxlength="2000"></label>
+        <label>Claim<input id="matrix-claim" maxlength="5000"></label>
+        <label>Method<input id="matrix-method" maxlength="1000"></label>
+        <label>Supporting passage<input id="matrix-passage" maxlength="5000"></label>
+        <label>Page number (optional)<input id="matrix-page" type="number" min="1"></label>
+        <button type="submit">Save matrix row</button>
+      </form>
+      <p id="matrix-result" class="hint"></p>
+      <div id="matrix-results" class="results"></div>
+    </section>
+    <footer>Local-first by default · external metadata calls are user-triggered · no source is assumed to support a claim without verification.</footer>
+  </main>
+</body>
+</html>

@@ -235,3 +235,36 @@ Work is developed on the `research-synthesist` branch. Review the diff and CI re
 ## Researcher-facing principle
 
 **Make the literature's reasoning visible, preserve provenance, connect sources carefully, and leave substantive interpretation with the researcher.**
+
+
+## Local research library
+
+Open `http://127.0.0.1:8000/library` after starting the app. The local catalogue stores normalized records and locally indexed document passages in SQLite under the user's application-data directory (or `SCHOLARFLOW_DATA_DIR`). It supports CSL JSON import, read-only Zotero import, local document indexing, Crossref/OpenAlex metadata discovery, passage search, an evidence-brief endpoint, and a candidate literature matrix.
+
+Install optional document extractors with:
+
+```powershell
+python -m pip install -r requirements-research.txt
+```
+
+PDF/DOCX extraction needs the optional dependencies. OCR for image-only scans is not bundled. A record returned by Crossref/OpenAlex is metadata, not proof it supports a claim. Zotero import is read-only. Private Web API imports require `ZOTERO_USER_ID` and `ZOTERO_API_KEY` in the local environment; never commit credentials.
+
+## Windows desktop package
+
+Build the native pywebview one-folder distribution on Windows 11 with Python 3.12 and Microsoft Edge WebView2 Runtime:
+
+```powershell
+.\scripts\build_windows_desktop.ps1
+```
+
+The output is `dist\ScholarFlow\ScholarFlow.exe`. The app starts the existing FastAPI backend on loopback and stops it when its window closes. The GitHub Actions workflow builds an artifact on Windows, but the target PC still requires a manual launch/close test. See [Windows desktop and REA runbook](docs/REA_WINDOWS_RUNBOOK.md).
+
+## REA readiness and behavioral study
+
+Read [REA provenance](docs/REA_PIN.md) and the [Windows runbook](docs/REA_WINDOWS_RUNBOOK.md). The readiness script is dry-run by default:
+
+```powershell
+.\scripts\rea-readiness.ps1
+```
+
+Actual Grammarly Free / QuillBot Free observations must be performed in a supported local coding-agent/browser environment using synthetic text from `docs/rea-study/fixtures.md`. The observation templates explicitly remain NOT TESTED until actual evidence is recorded.

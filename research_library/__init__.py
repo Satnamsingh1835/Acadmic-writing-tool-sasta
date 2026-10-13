@@ -1,0 +1,1 @@
+"""Local-first research library for ScholarFlow."""
