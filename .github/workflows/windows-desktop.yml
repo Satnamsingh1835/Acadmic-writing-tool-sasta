@@ -27,7 +27,44 @@ jobs:
       - name: Run tests
         run: python -m pytest -q
       - name: Build one-folder desktop distribution
-        run: python -m PyInstaller --noconfirm --clean ScholarFlowDesktop.spec
+        shell: pwsh
+        run: |
+          function Invoke-PyInstaller {
+            param([string]$LogPath)
+            cmd /c "python -m PyInstaller --noconfirm --clean ScholarFlowDesktop.spec > $LogPath 2>&1"
+            return $LASTEXITCODE
+          }
+          function Add-ErrorAnnotation {
+            param([string]$Title, [string]$Body)
+            if (-not $Body) { return }
+            if ($Body.Length -gt 3000) { $Body = $Body.Substring($Body.Length - 3000) }
+            $enc = $Body.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=$Title::$enc"
+          }
+          $code = Invoke-PyInstaller "pyinstaller-attempt1.log"
+          if ($code -ne 0) {
+            Write-Output "First PyInstaller attempt failed with exit code $code; retrying once after 5s (Windows Defender can transiently lock fresh outputs)."
+            Start-Sleep -Seconds 5
+            $code = Invoke-PyInstaller "pyinstaller-attempt2.log"
+          }
+          $log = if (Test-Path "pyinstaller-attempt2.log") { "pyinstaller-attempt2.log" } else { "pyinstaller-attempt1.log" }
+          Get-Content $log -Tail 60
+          if ($code -ne 0) {
+            $tail = (Get-Content $log -Tail 45) -join "`n"
+            Add-ErrorAnnotation "PyInstaller log tail" $tail
+            $hits = (Select-String -Path pyinstaller-attempt1.log, "pyinstaller-attempt2.log" -Pattern 'ERROR|Traceback|Exception' -ErrorAction SilentlyContinue |
+              Select-Object -First 30 | ForEach-Object { $_.Line }) -join "`n"
+            Add-ErrorAnnotation "PyInstaller error lines" $hits
+            exit $code
+          }
+      - name: Upload PyInstaller logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pyinstaller-logs
+          path: pyinstaller-attempt*.log
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
