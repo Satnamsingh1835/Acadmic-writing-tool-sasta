@@ -67,7 +67,7 @@ def _check_yaml(text: str) -> None:
 
 
 def check_file(path: Path, root: Path) -> FileCheck:
-    relative = str(path.relative_to(root))
+    relative = path.relative_to(root).as_posix()
     if not path.exists():
         return FileCheck(relative, "existence", False, "Tracked file is missing.")
 
