@@ -13,15 +13,15 @@ Pull request: [#32](https://github.com/Satnamsingh1835/Acadmic-writing-tool-sast
 | Workflow run (Windows desktop build) | <https://github.com/Satnamsingh1835/Acadmic-writing-tool-sasta/actions/runs/38515140216> |
 | Run head SHA (verified via API) | `62585396f1e3882c2487fbe92c8c1240c86f9568` — identical to the tested commit |
 | Result | `success` (tests → PyInstaller build → packaged smoke test all passed) |
-| Application artifact | `ScholarFlow-Windows-onedir` (artifact id `11872151027`, 27,593,125 bytes, built 2026-10-14T05:11:14Z) — its `workflow_run.head_sha` is `62585396…9568`, so the artifact was built from this commit |
-| Smoke-test log artifact | `scholarflow-smoke-log` (artifact id `11872250832`, 668 bytes zip, same run and head SHA) |
-| PyInstaller log artifact | `pyinstaller-logs` (artifact id `11872006243`) |
+| Application artifact | `ScholarFlow-Windows-onedir` (27,593,125 bytes, built 2026-10-14T05:11:14Z) — its `workflow_run.head_sha` is `62585396…9568`, so the artifact was built from this commit |
+| Smoke-test log artifact | `scholarflow-smoke-log` (668-byte zip, same run and head SHA) |
+| PyInstaller log artifact | `pyinstaller-logs` (same run) |
 
-Direct artifact links (GitHub sign-in as the repository owner also works through
-the run page → *Artifacts*):
-
-- Application: <https://github.com/Satnamsingh1835/Acadmic-writing-tool-sasta/actions/runs/38515140216/artifacts/11872151027>
-- Smoke-test log: <https://github.com/Satnamsingh1835/Acadmic-writing-tool-sasta/actions/runs/38515140216/artifacts/11872250832>
+To download: open the run page linked above, scroll to the **Artifacts** section at
+the bottom and click the artifact name (`ScholarFlow-Windows-onedir` for the
+application, `scholarflow-smoke-log` for the Windows check results). GitHub only
+serves artifacts to a signed-in user, so direct artifact URLs cannot be opened
+anonymously — always go through the run page.
 
 A copy of the same 28-check report, produced locally by the identical code path,
 is kept outside the repository at `scholarflow-smoke-log-6258539.txt` in the
@@ -164,13 +164,13 @@ These are configuration requirements, not defects:
 
 ### Get the build
 
-Download the application from the run listed in the provenance table above:
-<https://github.com/Satnamsingh1835/Acadmic-writing-tool-sasta/actions/runs/38515140216>
-→ **Artifacts** → `ScholarFlow-Windows-onedir.zip` (direct link:
-<https://github.com/Satnamsingh1835/Acadmic-writing-tool-sasta/actions/runs/38515140216/artifacts/11872151027>).
-Artifacts expire after 14 days; if the link has expired, open
-<https://github.com/Satnamsingh1835/Acadmic-writing-tool-sasta/pull/32/checks> →
-`build-windows-desktop` → the newest green **Windows desktop build** run → **Artifacts**.
+Open the run listed in the provenance table above
+(<https://github.com/Satnamsingh1835/Acadmic-writing-tool-sasta/actions/runs/38515140216>),
+scroll to the **Artifacts** section at the bottom of the page, and click
+`ScholarFlow-Windows-onedir` (or the newest green **Windows desktop build** run for
+this branch, reachable from
+<https://github.com/Satnamsingh1835/Acadmic-writing-tool-sasta/pull/32/checks>).
+Artifacts expire after 14 days; every new run rebuilds them.
 
 The same run also uploads `scholarflow-smoke-log` with the per-check results the
 packaged executable produced on Windows.
