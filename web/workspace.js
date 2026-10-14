@@ -187,12 +187,39 @@
     }, AUTOSAVE_DELAY_MS);
   }
 
+  /* Apply a programmatic edit to the editor.
+   *
+   * Setting ``textarea.value`` directly clears the browser's undo stack, so a
+   * researcher who accepted a correction could no longer press Ctrl+Z to get
+   * their sentence back. ``document.execCommand("insertText"/"delete")`` is the
+   * one API that participates in the native undo history, so it is used first,
+   * with the range selected. When it is unavailable (jsdom in the automated
+   * checks, or a browser that refuses the command) the direct assignment is
+   * still correct, it simply cannot be undone by the browser.
+   */
   function applyEdit(start, end, replacement, select = false) {
-    const value = elements.editor.value;
-    elements.editor.value = value.slice(0, start) + replacement + value.slice(end);
+    const editor = elements.editor;
+    const before = editor.value;
+    const expected = before.slice(0, start) + replacement + before.slice(end);
+    editor.focus();
+    editor.setSelectionRange(start, end);
+    let applied = false;
+    if (typeof document.execCommand === "function") {
+      try {
+        applied = replacement === ""
+          ? document.execCommand("delete")
+          : document.execCommand("insertText", false, replacement);
+      } catch {
+        applied = false;
+      }
+    }
+    if (!applied || editor.value !== expected) {
+      // Either the command did nothing, or it produced something other than the
+      // intended text (a partial insert, an input rule). Repair it exactly.
+      if (editor.value !== expected) editor.value = expected;
+    }
     const caret = start + replacement.length;
-    elements.editor.focus();
-    elements.editor.setSelectionRange(select ? start : caret, caret);
+    editor.setSelectionRange(select ? start : caret, caret);
     markDirty();
   }
 
@@ -667,6 +694,9 @@
   // measuring a hidden mirror of the textarea with the same text metrics, so a
   // marker always sits exactly over the characters it refers to.
   const ANALYSIS_DELAY_MS = 700;
+  // Long enough for a very large document on a slow machine, short enough that
+  // a stuck request is reported instead of spinning forever.
+  const ANALYSIS_TIMEOUT_MS = 20000;
   const MARKER_TRACK_LIMIT = 3;
   const DICTIONARY_PREFIX = "scholarflow:dictionary";
   const DISMISS_PREFIX = "scholarflow:dismissed:";
@@ -701,7 +731,10 @@
     suggestionAccept: byId("suggestion-accept"),
     suggestionDismiss: byId("suggestion-dismiss"),
     suggestionClose: byId("suggestion-close"),
+    editorShell: byId("editor-shell"),
     diagnosticsSummary: byId("diagnostics-summary"),
+    diagnosticsTotal: byId("diagnostics-total"),
+    diagnosticsProfile: byId("diagnostics-profile"),
     diagnosticsList: byId("diagnostics-list"),
     diagnosticsEmpty: byId("diagnostics-empty"),
     diagnosticsMetrics: byId("diagnostics-metrics"),
@@ -733,7 +766,23 @@
     checks: 0,
     error: null,
     dictionary: [],
+    profile: "standard",
+    profileLabel: "Academic standard",
+    spellingAvailable: true,
+    engine: null,
+    timedOut: false,
+    timeoutTimer: null,
   };
+
+  function styleCategoryEnabled(category) {
+    const findings = state.diagnostics.findings;
+    if (findings.some((finding) => finding.category === category)) return true;
+    const engine = state.diagnostics.engine;
+    if (engine && Array.isArray(engine.checked_categories)) {
+      return engine.checked_categories.includes(category);
+    }
+    return true;
+  }
 
   function categoryLetter(category) {
     return CATEGORY_LETTERS[category] || (category || "?").slice(0, 1).toUpperCase();
@@ -797,13 +846,24 @@
     }
     const controller = new AbortController();
     state.diagnostics.controller = controller;
+    // A hung analysis must not leave the panel spinning forever.
+    state.diagnostics.timeoutTimer = window.setTimeout(() => {
+      state.diagnostics.timedOut = true;
+      controller.abort();
+    }, ANALYSIS_TIMEOUT_MS);
+    state.diagnostics.timedOut = false;
     state.diagnostics.loading = true;
     state.diagnostics.requests += 1;
     renderDiagnosticsPanel();
     try {
       const report = await request("/api/workspace/diagnostics", {
         method: "POST",
-        body: JSON.stringify({ text, document_id: document_.id, revision: document_.revision }),
+        body: JSON.stringify({
+          text,
+          document_id: document_.id,
+          revision: document_.revision,
+          profile: elements.profile ? elements.profile.value : state.diagnostics.profile,
+        }),
         signal: controller.signal,
       });
       if (state.diagnostics.controller !== controller) return null;
@@ -821,15 +881,31 @@
       state.diagnostics.text = text;
       state.diagnostics.checks += 1;
       state.diagnostics.error = null;
+      state.diagnostics.profile = report.profile ? report.profile.id : state.diagnostics.profile;
+      state.diagnostics.profileLabel = report.profile
+        ? report.profile.label
+        : state.diagnostics.profileLabel;
+      state.diagnostics.engine = report.engine || null;
+      state.diagnostics.spellingAvailable = report.engine
+        ? report.engine.spelling_available !== false
+        : true;
       renderMarkers();
       renderDiagnosticsPanel();
       return report;
     } catch (error) {
+      if (state.diagnostics.timedOut) {
+        state.diagnostics.error =
+          "the check took too long and was stopped. Your text is unchanged; " +
+          "save your work and try again, or check the document in smaller parts.";
+        renderDiagnosticsPanel();
+        return null;
+      }
       if (error && (error.name === "AbortError" || error.aborted)) return null;
       state.diagnostics.error = error && error.message ? error.message : "unknown error";
       renderDiagnosticsPanel();
       return null;
     } finally {
+      window.clearTimeout(state.diagnostics.timeoutTimer);
       if (state.diagnostics.controller === controller) {
         state.diagnostics.loading = false;
         state.diagnostics.controller = null;
@@ -851,6 +927,8 @@
     state.diagnostics.activeId = null;
     state.diagnostics.openId = null;
     state.diagnostics.error = null;
+    state.diagnostics.timedOut = false;
+    window.clearTimeout(state.diagnostics.timeoutTimer);
     state.diagnostics.dismissed = keepDismissed && state.document ? readDismissed(state.document.id) : [];
     window.clearTimeout(state.diagnostics.timer);
     closeSuggestion("");
@@ -884,6 +962,12 @@
   function markerLabel(finding) {
     const kind = finding.kind === "error" ? "Error" : "Style option";
     return `${kind}, ${finding.category_label}: ${finding.message}`;
+  }
+
+  function resyncSuggestionAnchor() {
+    if (elements.suggestionCard.hidden) return;
+    const finding = findingById(state.diagnostics.openId);
+    if (finding) anchorSuggestionCard(finding);
   }
 
   function syncMarkerScroll() {
@@ -1031,6 +1115,27 @@
       `${errorCount} errors and ${styleCount} style options, showing ${shown.length}`,
     );
 
+    // A single, plain-language total, plus what it was checked against.
+    const total = diagnostics.findings.length;
+    elements.diagnosticsTotal.hidden = false;
+    elements.diagnosticsTotal.textContent =
+      total === 0
+        ? "No issues found in this document."
+        : `${total} issue${total === 1 ? "" : "s"} in this document` +
+          (dismissed ? ` (${dismissed} dismissed)` : "") +
+          (diagnostics.truncated ? " — the first findings of a long document" : ".");
+    const profileLabel = diagnostics.profileLabel || "Academic Standard";
+    const styleOff = [];
+    for (const item of diagnostics.categories) {
+      if (item.kind === "style" && !styleCategoryEnabled(item.id)) styleOff.push(item.label);
+    }
+    elements.diagnosticsProfile.textContent =
+      `${profileLabel} profile: spelling and grammar always run.` +
+      (styleOff.length ? ` This profile leaves out ${styleOff.join(", ").toLowerCase()}.` : "") +
+      (diagnostics.spellingAvailable
+        ? ""
+        : " The bundled dictionary is unavailable, so spelling was not checked.");
+
     // Group by category, errors first, each group labelled with its kind.
     const groups = new Map();
     for (const finding of shown) {
@@ -1039,9 +1144,14 @@
     }
     const order = diagnostics.categories.map((item) => item.id);
     const sortedCategories = [...groups.keys()].sort((left, right) => {
+      // Errors before style options, then the order the engine's taxonomy
+      // publishes (which the profile reprioritises), then the rule order.
       const leftError = groups.get(left)[0].kind === "error" ? 0 : 1;
       const rightError = groups.get(right)[0].kind === "error" ? 0 : 1;
       if (leftError !== rightError) return leftError - rightError;
+      const leftPriority = groups.get(left)[0].priority ?? 99;
+      const rightPriority = groups.get(right)[0].priority ?? 99;
+      if (leftPriority !== rightPriority) return leftPriority - rightPriority;
       return order.indexOf(left) - order.indexOf(right);
     });
     for (const category of sortedCategories) {
@@ -1055,7 +1165,10 @@
       heading.innerHTML =
         `${escapeHtml(items[0].category_label)} ` +
         `<span class="diag-kind kind-${kind}">${kind === "error" ? "errors" : "style options"}</span> ` +
-        `<span class="diag-text">(${items.length})</span>`;
+        `<span class="diag-text">(${items.length})</span>` +
+        (items[0].group_label && items[0].group_label !== items[0].category_label
+          ? ` <span class="diag-text diag-group-tag">${escapeHtml(items[0].group_label)}</span>`
+          : "");
       section.appendChild(heading);
       if (info.hint) {
         const hint = document.createElement("p");
@@ -1095,6 +1208,10 @@
       elements.diagnosticsEmpty.hidden = false;
       if (diagnostics.loading) {
         elements.diagnosticsEmpty.textContent = "Checking this document…";
+      } else if (!diagnostics.spellingAvailable && !diagnostics.error) {
+        elements.diagnosticsEmpty.textContent =
+          "The bundled spelling dictionary could not be loaded, so spelling was not checked. " +
+          "Grammar, punctuation and style checks still ran locally.";
       } else if (diagnostics.error) {
         elements.diagnosticsEmpty.textContent = `Diagnostics could not run: ${diagnostics.error}. Your text is unchanged.`;
       } else if (diagnostics.findings.length) {
@@ -1162,6 +1279,56 @@
   }
 
   // ----------------------------------------------------------- suggestion card
+  /* Place the suggestion card next to the text it is about.
+   *
+   * The card is a pop-up anchored to the marker (or, when the marker has no
+   * measurable position, to the paragraph in the editor), and it falls back to
+   * its place in the document flow when the surface cannot be measured -- jsdom
+   * in the automated checks has no layout engine at all. Everything that
+   * decides *what* is shown is unchanged; this only decides where.
+   */
+  function anchorSuggestionCard(finding) {
+    const card = elements.suggestionCard;
+    const shell = elements.editorShell || elements.editor.parentElement;
+    card.classList.remove("is-anchored");
+    card.style.left = "";
+    card.style.top = "";
+    if (!shell || !finding) return;
+    const shellRect = shell.getBoundingClientRect();
+    if (!shellRect.width || !shellRect.height) return; // no layout available
+    let marker = null;
+    for (const candidate of elements.markerLayer.querySelectorAll(".marker")) {
+      if (candidate.dataset.id === finding.id && !candidate.dataset.fallback) {
+        marker = candidate;
+        break;
+      }
+    }
+    const rect = marker ? marker.getBoundingClientRect() : null;
+    const cardRect = card.getBoundingClientRect();
+    const width = cardRect.width || 320;
+    const height = cardRect.height || 220;
+    let left;
+    let top;
+    if (rect && rect.width) {
+      left = rect.left - shellRect.left;
+      top = rect.bottom - shellRect.top + 6;
+    } else {
+      // Fall back to the line the finding starts on, measured in the editor.
+      const lineHeight = parseFloat(window.getComputedStyle(elements.editor).lineHeight) || 27;
+      const line = elements.editor.value.slice(0, finding.start).split("\n").length - 1;
+      left = 8;
+      top = line * lineHeight - elements.editor.scrollTop + lineHeight + 6;
+    }
+    left = Math.max(4, Math.min(left, Math.max(4, shellRect.width - width - 4)));
+    if (top + height > shellRect.height) {
+      // Not enough room below: sit above the finding instead.
+      top = rect ? rect.top - shellRect.top - height - 6 : Math.max(4, top - height - lineHeight);
+    }
+    card.style.left = `${Math.round(left)}px`;
+    card.style.top = `${Math.round(Math.max(4, top))}px`;
+    card.classList.add("is-anchored");
+  }
+
   function openSuggestion(id) {
     const finding = findingById(id);
     if (!finding) return;
@@ -1171,7 +1338,10 @@
     renderMarkers();
     renderDiagnosticsPanel();
     elements.suggestionCard.hidden = false;
-    elements.suggestionCard.scrollIntoView({ block: "nearest" });
+    anchorSuggestionCard(finding);
+    if (!elements.suggestionCard.classList.contains("is-anchored")) {
+      elements.suggestionCard.scrollIntoView({ block: "nearest" });
+    }
     elements.suggestionAccept.focus();
   }
 
@@ -1188,8 +1358,10 @@
       ? finding.replacement
       : "(no automatic replacement — review the explanation)";
     elements.suggestionProposalHeading.textContent = hasReplacement ? "Proposed correction" : "Correction";
+    const groupLabel = finding.group_label ? `${finding.group_label} · ` : "";
     elements.suggestionMeta.textContent =
-      `${kind} · ${finding.confidence} confidence · rule ${finding.rule} · characters ${finding.start}-${finding.end}`;
+      `${kind} · ${groupLabel}${finding.category_label} · ${finding.confidence} confidence · ` +
+      `rule ${finding.rule} v${finding.rule_version || "1.0"} · characters ${finding.start}-${finding.end}`;
     elements.suggestionExplanation.textContent = finding.explanation;
     elements.suggestionAccept.disabled = !hasReplacement;
     elements.suggestionAccept.setAttribute("aria-disabled", hasReplacement ? "false" : "true");
@@ -1315,8 +1487,24 @@
   elements.filterAll.addEventListener("click", () => setFilter("all"));
   elements.filterError.addEventListener("click", () => setFilter("error"));
   elements.filterStyle.addEventListener("click", () => setFilter("style"));
-  elements.editor.addEventListener("scroll", syncMarkerScroll);
-  window.addEventListener("resize", () => renderMarkers());
+  elements.editor.addEventListener("scroll", () => {
+    syncMarkerScroll();
+    resyncSuggestionAnchor();
+  });
+  window.addEventListener("resize", () => {
+    renderMarkers();
+    resyncSuggestionAnchor();
+  });
+  if (elements.profile) {
+    elements.profile.addEventListener("change", () => {
+      // The profile decides which optional style rules run, so the report has
+      // to be recomputed. It never changes the document.
+      state.diagnostics.profileLabel =
+        PROFILE_LABELS[elements.profile.value] || elements.profile.value;
+      renderDiagnosticsPanel();
+      scheduleAnalysis(0);
+    });
+  }
   byId("finding-next").addEventListener("click", () => focusFinding(1));
   byId("finding-previous").addEventListener("click", () => focusFinding(-1));
   byId("finding-recheck").addEventListener("click", () => analyseNow());
@@ -1501,6 +1689,11 @@
         checks: state.diagnostics.checks,
         analysedText: state.diagnostics.text,
         error: state.diagnostics.error,
+        profile: state.diagnostics.profile,
+        profileLabel: state.diagnostics.profileLabel,
+        spellingAvailable: state.diagnostics.spellingAvailable,
+        engine: state.diagnostics.engine,
+        truncated: state.diagnostics.truncated,
         categories: state.diagnostics.categories.map((item) => item.id),
         findings: state.diagnostics.findings.map((item) => ({
           id: item.id,
@@ -1526,6 +1719,13 @@
     setFilter,
     focusFinding,
     restoreDismissed,
+    setProfile: (value) => {
+      if (elements.profile) {
+        elements.profile.value = value;
+        elements.profile.dispatchEvent(new window.Event("change", { bubbles: true }));
+      }
+    },
+    anchorSuggestionCard,
     dictionary: { list: loadDictionary, add: addFindingWordToDictionary },
   };
 

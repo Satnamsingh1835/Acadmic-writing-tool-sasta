@@ -83,7 +83,7 @@
         <span>Document title</span>
         <input id="doc-title" maxlength="300" placeholder="Untitled document">
       </label>
-      <div class="editor-shell">
+      <div class="editor-shell" id="editor-shell">
         <div class="marker-layer" id="marker-layer" role="group"
              aria-label="Diagnostic markers: use the arrow keys to move between findings and Enter to review one"></div>
         <div class="marker-mirror" id="marker-mirror" aria-hidden="true"></div>
@@ -160,6 +160,8 @@
       <p class="diagnostics-summary" id="diagnostics-summary" role="status" aria-live="polite">
         No document open.
       </p>
+      <p class="diagnostics-total" id="diagnostics-total" role="status" aria-live="polite" hidden></p>
+      <p class="diagnostics-profile" id="diagnostics-profile"></p>
       <div class="filter-row" role="group" aria-label="Filter findings">
         <button type="button" id="filter-all" aria-pressed="true">All</button>
         <button type="button" id="filter-error" aria-pressed="false">Errors only</button>

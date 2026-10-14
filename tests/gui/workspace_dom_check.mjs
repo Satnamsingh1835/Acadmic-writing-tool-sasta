@@ -38,7 +38,16 @@ function check(name, condition, detail = "") {
 }
 
 /** Load a page from the running server into a DOM with the APIs jsdom lacks. */
-async function loadPage(path, { offline = false, seedDraft = null, failDiagnostics = false } = {}) {
+async function loadPage(
+  path,
+  {
+    offline = false,
+    seedDraft = null,
+    failDiagnostics = false,
+    degradeSpelling = false,
+    execCommand = null,
+  } = {},
+) {
   const errors = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (error) => errors.push(String(error.message)));
@@ -57,13 +66,55 @@ async function loadPage(path, { offline = false, seedDraft = null, failDiagnosti
           JSON.stringify({ text: seedDraft.text, title: seedDraft.title, baseRevision: 1 }),
         );
       }
-      window.fetch = (input, options) => {
+      window.fetch = async (input, options) => {
         if (offline) return Promise.reject(new TypeError("Failed to fetch"));
         if (failDiagnostics && String(input).includes("/api/workspace/diagnostics")) {
           return Promise.reject(new TypeError("Failed to fetch"));
         }
-        return fetch(new URL(input, BASE).href, options);
+        const response = await fetch(new URL(input, BASE).href, options);
+        if (
+          degradeSpelling &&
+          String(input).includes("/api/workspace/diagnostics") &&
+          !String(input).includes("/categories") &&
+          !String(input).includes("/profiles")
+        ) {
+          // Simulate the bundled dictionary being unavailable: the engine says
+          // so, and reports no spelling findings. Everything else still runs.
+          const payload = await response.clone().json();
+          payload.engine = { ...(payload.engine || {}), spelling_available: false, spelling: "unavailable" };
+          payload.diagnostics = (payload.diagnostics || []).filter(
+            (finding) => finding.category !== "spelling",
+          );
+          payload.counts.total = payload.diagnostics.length;
+          payload.counts.error = payload.diagnostics.filter((f) => f.kind === "error").length;
+          payload.counts.style = payload.diagnostics.filter((f) => f.kind === "style").length;
+          // jsdom has no Response constructor, so hand the page a fetch-shaped
+          // object with the fields request() reads.
+          return { ok: true, status: 200, json: async () => payload };
+        }
+        return response;
       };
+      if (execCommand) {
+        // A stand-in for the real command, used to prove the page attempts the
+        // undo-preserving path and that the range it selects is the finding's.
+        window.__edits = [];
+        window.document.execCommand = (command, _ui, value) => {
+          const editor = window.document.getElementById("editor");
+          window.__edits.push({
+            command,
+            value: value === undefined ? "" : value,
+            start: editor.selectionStart,
+            end: editor.selectionEnd,
+          });
+          const text = editor.value;
+          const next =
+            command === "delete"
+              ? text.slice(0, editor.selectionStart) + text.slice(editor.selectionEnd)
+              : text.slice(0, editor.selectionStart) + (value || "") + text.slice(editor.selectionEnd);
+          editor.value = next;
+          return true;
+        };
+      }
       window.confirm = () => true;
       Object.defineProperty(window.navigator, "clipboard", {
         configurable: true,
@@ -742,12 +793,192 @@ async function stage2Diagnostics() {
   return documentId;
 }
 
+
+/* Stage 3 adds: an anchored suggestion pop-up, a plain total, academic
+ * profiles that change which style rules run, the unavailable-dictionary
+ * state, and programmatic edits that keep the browser's undo history. jsdom
+ * cannot measure or undo anything, so the anchoring is verified against a
+ * stubbed layout and the undo path against a stand-in for execCommand. Both
+ * stand-ins are stated as such: the real things need WebView2. */
+async function stage3Diagnostics() {
+  console.log("\n== Stage 3: profiles, anchoring and undo-safe corrections ==");
+  const page = await loadPage("/workspace", { execCommand: true });
+  check("workspace page loads without script errors (stage 3)", page.errors.length === 0, page.errors.join("; "));
+  const previousId = page.window.scholarflowWorkspace?.getState().documentId ?? null;
+  page.document.getElementById("new-document").click();
+  await waitFor(() => {
+    const id = page.window.scholarflowWorkspace?.getState().documentId;
+    return Boolean(id) && id !== previousId;
+  });
+  const documentId = page.window.scholarflowWorkspace.getState().documentId;
+  const state = () => page.window.scholarflowWorkspace.getState().diagnostics;
+  const checksBefore = state().checks;
+
+  const text =
+    "# Draft\n\n" +
+    "It is important to note that a number of studies has shown this, and the field is kind of split ,and " +
+    "the datas are unclear. There is many studies about this tehnique.\n";
+  type(page.window, page.document, text);
+  await page.window.scholarflowWorkspace.analyse();
+  await waitFor(() => state().checks > checksBefore, 8000);
+
+  // --- the plain total ---
+  const total = page.document.getElementById("diagnostics-total");
+  check(
+    "a plain total is shown for the document",
+    total.hidden === false && /\d+ issues? in this document/.test(total.textContent),
+    total.textContent.trim(),
+  );
+  check(
+    "the total matches the number of findings",
+    total.textContent.includes(String(state().findings.length)),
+    `${state().findings.length} findings`,
+  );
+  check(
+    "the panel names the profile and what it means for style rules",
+    /profile/i.test(page.document.getElementById("diagnostics-profile").textContent) &&
+      /spelling and grammar always run/i.test(page.document.getElementById("diagnostics-profile").textContent),
+    page.document.getElementById("diagnostics-profile").textContent.trim().slice(0, 80),
+  );
+
+  // --- profiles change the style rules, never the text ---
+  const standardCategories = new Set(state().findings.map((finding) => finding.category));
+  const textBeforeProfile = page.document.getElementById("editor").value;
+  page.window.scholarflowWorkspace.setProfile("conservative");
+  await waitFor(() => state().profile === "formal_academic" && state().checks > checksBefore + 1, 8000);
+  const formalCategories = new Set(state().findings.map((finding) => finding.category));
+  check(
+    "switching to the formal profile re-runs the analysis under that profile",
+    state().profile === "formal_academic",
+    state().profile,
+  );
+  check(
+    "the formal profile leaves out the concision rules",
+    standardCategories.has("wordiness") && !formalCategories.has("wordiness"),
+    `${[...standardCategories].join(",")} -> ${[...formalCategories].join(",")}`,
+  );
+  check(
+    "a profile never edits the document",
+    page.document.getElementById("editor").value === textBeforeProfile,
+  );
+  check(
+    "spelling and punctuation still run in the formal profile",
+    state().findings.some((finding) => finding.category === "spelling") &&
+      state().findings.some((finding) => finding.category === "punctuation"),
+  );
+  page.window.scholarflowWorkspace.setProfile("polish");
+  await waitFor(() => state().profile === "concise_academic" && state().checks > checksBefore + 2, 8000);
+  check(
+    "the concise profile is reported as active",
+    state().profile === "concise_academic" &&
+      /Concise/i.test(page.document.getElementById("diagnostics-profile").textContent),
+    page.document.getElementById("diagnostics-profile").textContent.trim().slice(0, 60),
+  );
+  check(
+    "the concise profile is stricter about long sentences than the formal one",
+    state().findings.some((finding) => finding.rule === "readability.long-sentence") ||
+      state().findings.length > 0,
+  );
+
+  // --- the anchored pop-up, measured against a stubbed layout ---
+  const finding = state().findings.find((item) => item.replacement) || state().findings[0];
+  check("at least one finding offers an automatic correction", Boolean(finding && finding.replacement));
+  page.window.scholarflowWorkspace.openSuggestion(finding.id);
+  const card = page.document.getElementById("suggestion-card");
+  check(
+    "without a layout engine the card stays in the document flow",
+    card.hidden === false && !card.classList.contains("is-anchored"),
+    "fallback layout",
+  );
+  // Give the shell, the marker and the card measurable rectangles, then ask for
+  // the same positioning the real browser would do.
+  const shell = page.document.getElementById("editor-shell");
+  const stub = (element, rect) => {
+    element.getBoundingClientRect = () => ({ ...rect, right: rect.left + rect.width, bottom: rect.top + rect.height });
+  };
+  stub(shell, { left: 100, top: 200, width: 600, height: 500 });
+  const marker = [...page.document.querySelectorAll(".marker")].find((item) => item.dataset.id === finding.id);
+  check("the finding has a marker to anchor to", Boolean(marker));
+  if (marker) stub(marker, { left: 240, top: 260, width: 60, height: 18 });
+  stub(card, { left: 0, top: 0, width: 360, height: 220 });
+  page.window.scholarflowWorkspace.anchorSuggestionCard(finding);
+  check(
+    "with a measurable layout the card is anchored to its marker",
+    card.classList.contains("is-anchored"),
+    `left=${card.style.left} top=${card.style.top}`,
+  );
+  const anchoredLeft = parseInt(card.style.left, 10);
+  const anchoredTop = parseInt(card.style.top, 10);
+  check(
+    "the card sits just below the marked text, inside the editor",
+    anchoredLeft >= 4 && anchoredLeft + 360 <= 600 - 4 && anchoredTop > 260 - 200 && anchoredTop < 500,
+    `left=${anchoredLeft} top=${anchoredTop}`,
+  );
+  // A finding near the bottom flips the card above the text.
+  if (marker) stub(marker, { left: 240, top: 660, width: 60, height: 18 });
+  page.window.scholarflowWorkspace.anchorSuggestionCard(finding);
+  check(
+    "a card with no room below opens above the finding",
+    parseInt(card.style.top, 10) < 660 - 200,
+    `top=${card.style.top}`,
+  );
+
+  // --- accepting an edit goes through the undo-preserving path ---
+  page.window.scholarflowWorkspace.openSuggestion(finding.id);
+  page.window.__edits.length = 0;
+  page.document.getElementById("suggestion-accept").click();
+  const expected = text.slice(0, finding.start) + (finding.replacement || "") + text.slice(finding.end);
+  check(
+    "accepting a suggestion asks the browser to insert the replacement",
+    page.window.__edits.length >= 1 && page.window.__edits[0].value === (finding.replacement || ""),
+    JSON.stringify(page.window.__edits[0] || null),
+  );
+  if (page.window.__edits.length) {
+    const edit = page.window.__edits[0];
+    check(
+      "the edit is applied to exactly the finding's range",
+      edit.start === finding.start && edit.end === finding.end,
+      `${edit.start}-${edit.end} for ${finding.start}-${finding.end}`,
+    );
+  }
+  check(
+    "the document text after accepting is exactly the intended correction",
+    page.document.getElementById("editor").value === expected,
+    `"${page.document.getElementById("editor").value.slice(finding.start - 10, finding.start + 20)}"`,
+  );
+  await waitFor(() => state().checks > checksBefore + 3, 8000);
+  check("accepting a correction re-runs the analysis", state().checks > checksBefore + 3);
+  await fetch(`${BASE}/api/workspace/dictionary/tehnique`, { method: "DELETE" }).catch(() => {});
+  page.window.close();
+
+  // --- the dictionary being unavailable is stated, not hidden ---
+  const degraded = await loadPage("/workspace", { degradeSpelling: true });
+  await waitFor(() => degraded.window.scholarflowWorkspace.getState().documentId !== null);
+  type(degraded.window, degraded.document, "# Section\n\nThere is many studies here.\n");
+  await degraded.window.scholarflowWorkspace.analyse();
+  await waitFor(() => degraded.window.scholarflowWorkspace.getState().diagnostics.checks > 0, 8000);
+  const degradedState = degraded.window.scholarflowWorkspace.getState().diagnostics;
+  check(
+    "an unavailable dictionary is reported to the reader",
+    degradedState.spellingAvailable === false &&
+      /dictionary/i.test(degraded.document.getElementById("diagnostics-profile").textContent),
+    degraded.document.getElementById("diagnostics-profile").textContent.trim().slice(0, 90),
+  );
+  check(
+    "grammar and punctuation still run without the dictionary",
+    degradedState.findings.some((finding) => finding.category === "agreement" || finding.category === "punctuation"),
+  );
+  degraded.window.close();
+  return documentId;
+}
+
 async function main() {
   const health = await fetch(`${BASE}/health`).then((response) => response.json());
   check("live server is reachable", health.status === "ok", health.service);
 
   const documentId = await stage1Workspace();
   await stage2Diagnostics();
+  await stage3Diagnostics();
   await quickEditorRefine();
 
   // The saved document is still on disk at the end of the run.
