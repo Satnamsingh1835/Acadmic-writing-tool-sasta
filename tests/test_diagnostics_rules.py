@@ -266,12 +266,24 @@ def test_offsets_hold_for_unicode_markdown_and_multiple_findings(engine):
     assert text.startswith("# Findings — a working draft\n\n")
 
 
-def test_repeated_adjacent_word_is_reported_as_a_repetition(engine):
+def test_repeated_adjacent_word_is_reported_as_an_error(engine):
     text = "The the sample was small."
-    item = only(engine.analyse(text), "repetition.immediate")
+    item = only(engine.analyse(text), "repetition.repeated-word")
     assert item["original"].lower() == "the"
     assert text[item["start"]:item["end"]] == item["original"]
     assert item["confidence"] == "high"
+    # A word typed twice is an error, not an optional style preference.
+    assert item["kind"] == "error"
+    assert item["group"] == "repetition"
+
+
+@pytest.mark.parametrize("word", ["had", "that", "very"])
+def test_a_doubling_that_is_often_deliberate_stays_a_style_option(engine, word):
+    text = f"The sample {word} {word} small effect reported."
+    item = only(engine.analyse(text), "repetition.repeated-word")
+    assert item["kind"] == "style"
+    assert item["confidence"] == "medium"
+    assert "deliberately" in item["explanation"]
 
 
 # -------------------------------------------------------- performance bounds

@@ -136,7 +136,8 @@ build.
 | Clarity | `readability.long-sentence`, `readability.long-paragraph`, `clarity.ambiguous-this` | style |
 | Concision | `wordiness.longer-phrase`, `wordiness.formulaic-opener` | style |
 | Academic style | `tone.contraction`, `tone.vague-quantifier`, `tone.overclaim` | style |
-| Repetition | `repetition.immediate`, `repetition.overused-word`, `repetition.overused-phrase` | style |
+| Repetition | `repetition.repeated-word` (a doubled word is an error) | error |
+| Repetition | `repetition.overused-word`, `repetition.overused-phrase` | style |
 
 ## 5. Academic profiles
 

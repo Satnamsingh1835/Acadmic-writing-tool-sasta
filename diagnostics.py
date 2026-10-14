@@ -167,6 +167,7 @@ DEFAULT_RULE_VERSION = "1.0"
 # Rules introduced or materially changed after the first ruleset: a client can
 # tell "this rule is new" from "this rule changed what it reports".
 RULE_VERSIONS: dict[str, str] = {
+    "repetition.repeated-word": "2.0",
     "spelling.misspelling": "2.0",
     "spelling.unknown-word": "2.0",
     "grammar.mass-noun-plural": "2.0",
@@ -575,6 +576,11 @@ def _british_equivalents(word: str) -> Iterator[str]:
     yield re.sub(r"ence\b", "ense", word)
     yield re.sub(r"eable\b", "able", word)
 
+
+# A word written twice is usually a typing slip, but these three are doubled on
+# purpose ("had had", "that that", "very very") often enough that reporting them
+# as errors would be wrong. They are still reported, as optional style.
+LEGITIMATE_DOUBLINGS = frozenset({"had", "that", "very"})
 
 # Contractions that are unambiguously mispunctuated without an apostrophe. A
 # closed list: "its/it's", "whose/who's" and possessives are excluded on purpose.
@@ -2070,15 +2076,28 @@ class DiagnosticEngine:
         for previous, current in zip(range(len(words)), range(1, len(words))):
             if words[previous] == words[current] and len(words[current]) > 1:
                 match = tokens[current]
+                # A word typed twice by accident is an objective error, not a
+                # style preference, so it is classified as one even though it
+                # lives in the repetition family. Deliberate repetition
+                # ("very very", "had had") is not something this rule can tell
+                # apart, which is why it still offers no replacement.
+                deliberate = words[current] in LEGITIMATE_DOUBLINGS
                 add(
-                    "repetition.immediate",
+                    "repetition.repeated-word",
                     "repetition",
-                    f"\"{match.group(0)}\" is repeated.",
-                    "Optional: remove the duplicate word.",
+                    f"\"{match.group(0)}\" is written twice in a row.",
+                    "This is usually a typing slip: remove one of the two words. "
+                    + (
+                        "This word is often doubled deliberately, so treat it as a "
+                        "style question rather than a mistake."
+                        if deliberate
+                        else "If the repetition is deliberate, leave it as it is."
+                    ),
                     match.start(),
                     match.end(),
                     (),
-                    confidence="high",
+                    confidence="high" if not deliberate else "medium",
+                    kind_override=None if deliberate else "error",
                 )
 
         counts: dict[str, list[int]] = {}

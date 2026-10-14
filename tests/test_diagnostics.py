@@ -305,8 +305,18 @@ def test_repetition_category(engine):
     text = "The the outcome was studied. Outcomes, outcomes and outcomes were reported."
     report = engine.analyse(text)
     items = findings(report, "repetition")
-    assert any(item["rule"] == "repetition.immediate" for item in items)
-    assert all(item["kind"] == "style" for item in items)
+    # Stage 3 renamed this rule and reclassified it: a word written twice in a
+    # row is an objective error ("repetition.repeated-word"), while the vague
+    # overuse rules around it stay style suggestions. Offsets are unchanged.
+    doubled = [item for item in items if item["rule"] == "repetition.repeated-word"]
+    assert doubled and all(item["kind"] == "error" for item in doubled)
+    # Anything else the repetition family reports is still an optional style
+    # suggestion, never an error.
+    assert all(
+        item["kind"] == "style"
+        for item in items
+        if item["rule"] != "repetition.repeated-word"
+    )
     check_offsets(text, report)
 
 
