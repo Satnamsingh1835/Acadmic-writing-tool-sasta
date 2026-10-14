@@ -466,6 +466,79 @@ def run_smoke_checks(base_url: str, root: Path) -> list[tuple[str, bool, str]]:
             status == 200 and after.get("text") == saved_text,
             "HTTP " + str(status),
         )
+        # Stage 2: the deterministic diagnostics must work inside the packaged
+        # application, which also proves the bundled spelling dictionary was
+        # collected (a frozen build without it reports no spelling findings).
+        diagnostic_text = (
+            "There is many studies about this tehnique. The data is unclear. "
+            "because the sample size was small."
+        )
+        status, report = _smoke_json(
+            base_url,
+            "POST",
+            "/api/workspace/diagnostics",
+            {"text": diagnostic_text, "document_id": document_id, "revision": 1},
+        )
+        findings = report.get("diagnostics", []) if isinstance(report, dict) else []
+        record(
+            "workspace diagnostics endpoint",
+            status == 200 and len(findings) >= 3,
+            "HTTP " + str(status) + " findings=" + str(len(findings)),
+        )
+        exact = all(
+            diagnostic_text[item.get("start", 0):item.get("end", 0)] == item.get("original")
+            for item in findings
+        )
+        record("workspace diagnostics offsets are exact", bool(findings) and exact)
+        spelling = [item for item in findings if item.get("category") == "spelling"]
+        record(
+            "workspace bundled dictionary works when frozen",
+            bool(spelling) and any(item.get("replacement") for item in spelling),
+            "spelling findings=" + str(len(spelling)),
+        )
+        by_kind = {item.get("kind") for item in findings}
+        record(
+            "workspace diagnostics separate errors from style",
+            {"error", "style"} <= by_kind,
+            "kinds=" + ",".join(sorted(str(kind) for kind in by_kind)),
+        )
+        record(
+            "workspace diagnostics stay local",
+            isinstance(report, dict)
+            and report.get("engine", {}).get("external_services") == "none",
+        )
+
+        marker = "smokeword" + uuid.uuid4().hex[:6]
+        status, payload = _smoke_json(base_url, "POST", "/api/workspace/dictionary", {"word": marker})
+        record(
+            "workspace personal dictionary add",
+            status == 200 and marker in payload.get("words", []),
+            "HTTP " + str(status),
+        )
+        status, report = _smoke_json(
+            base_url,
+            "POST",
+            "/api/workspace/diagnostics",
+            {"text": "The " + marker + " settlement shaped tenure."},
+        )
+        record(
+            "workspace personal dictionary suppresses a word",
+            status == 200
+            and not any(item.get("original") == marker for item in report.get("diagnostics", [])),
+            "HTTP " + str(status),
+        )
+        status, payload = _smoke_json(base_url, "DELETE", "/api/workspace/dictionary/" + marker)
+        record(
+            "workspace personal dictionary remove",
+            status == 200 and marker not in payload.get("words", []),
+            "HTTP " + str(status),
+        )
+        status, payload = _smoke_json(base_url, "GET", "/api/documents/" + document_id)
+        record(
+            "workspace diagnostics never write to the document",
+            status == 200 and payload.get("text") == saved_text,
+            "HTTP " + str(status),
+        )
     else:
         for name in (
             "writing workspace save document",
@@ -476,6 +549,15 @@ def run_smoke_checks(base_url: str, root: Path) -> list[tuple[str, bool, str]]:
             "writing workspace restore is reversible",
             "writing workspace stale save refused",
             "writing workspace text survived the refused write",
+            "workspace diagnostics endpoint",
+            "workspace diagnostics offsets are exact",
+            "workspace bundled dictionary works when frozen",
+            "workspace diagnostics separate errors from style",
+            "workspace diagnostics stay local",
+            "workspace personal dictionary add",
+            "workspace personal dictionary suppresses a word",
+            "workspace personal dictionary remove",
+            "workspace diagnostics never write to the document",
         ):
             record(name, False, "no document id from the create check")
 

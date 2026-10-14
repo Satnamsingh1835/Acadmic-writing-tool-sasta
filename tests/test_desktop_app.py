@@ -46,6 +46,13 @@ def test_smoke_checks_pass_against_live_server(tmp_path, monkeypatch):
     assert any("writing workspace page /workspace" in name for name in names)
     assert any("writing workspace save document" in name for name in names)
     assert any("writing workspace stale save refused" in name for name in names)
+    # Stage 2: diagnostics must be exercisable inside the packaged app.
+    assert any("workspace diagnostics endpoint" in name for name in names)
+    assert any("workspace diagnostics offsets are exact" in name for name in names)
+    assert any("workspace bundled dictionary works when frozen" in name for name in names)
+    assert any("workspace diagnostics separate errors from style" in name for name in names)
+    assert any("workspace diagnostics stay local" in name for name in names)
+    assert any("workspace personal dictionary suppresses a word" in name for name in names)
 
 
 def test_smoke_main_uses_isolated_data_and_never_imports_webview(tmp_path, monkeypatch):
@@ -88,6 +95,8 @@ def test_smoke_main_survives_a_windowed_build_with_no_stdout(tmp_path, monkeypat
     assert "library add reference" in text
     assert "writing workspace save document" in text
     assert "writing workspace database persisted to disk" in text
+    assert "workspace diagnostics endpoint" in text
+    assert "workspace bundled dictionary works when frozen" in text
 
 
 def test_smoke_report_path_defaults_inside_the_data_dir(tmp_path, monkeypatch):
