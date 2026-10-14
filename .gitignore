@@ -16,4 +16,3 @@ dist/
 
 # Node modules for the jsdom GUI checks (installed on demand).
 tests/gui/node_modules/
-tests/gui/package-lock.json
