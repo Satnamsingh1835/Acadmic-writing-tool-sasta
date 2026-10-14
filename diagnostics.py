@@ -28,6 +28,7 @@ and a refine proposal never disagree about wording.
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 import json
 import os
@@ -574,6 +575,86 @@ def _british_equivalents(word: str) -> Iterator[str]:
     yield re.sub(r"eable\b", "able", word)
 
 
+# Contractions that are unambiguously mispunctuated without an apostrophe. A
+# closed list: "its/it's", "whose/who's" and possessives are excluded on purpose.
+MISSING_APOSTROPHE_FORMS: dict[str, str] = {
+    "dont": "don't",
+    "doesnt": "doesn't",
+    "didnt": "didn't",
+    "isnt": "isn't",
+    "arent": "aren't",
+    "wasnt": "wasn't",
+    "werent": "weren't",
+    "hasnt": "hasn't",
+    "havent": "haven't",
+    "hadnt": "hadn't",
+    "couldnt": "couldn't",
+    "wouldnt": "wouldn't",
+    "shouldnt": "shouldn't",
+    "cant": "can't",
+    "wont": "won't",
+    "thats": "that's",
+    "theres": "there's",
+}
+# Forms that are also ordinary words somewhere in academic English ("cant" = cant
+# language, "wont" = wont), so they are reported more cautiously.
+HOMOPHONE_APOSTROPHE_FORMS = frozenset({"cant", "wont", "thats"})
+
+# Words spelled with a vowel letter that begin with a consonant sound.
+CONSONANT_SOUND_VOWELS: tuple[str, ...] = (
+    "uni", "use", "usu", "uti", "utili", "eu", "eul", "eup", "euro", "ufo",
+    "one", "once", "ouija", "ubiq",
+)
+
+# Words whose leading "h" is silent, so the article follows the vowel.
+SILENT_H_WORDS = frozenset(
+    {
+        "hour", "hours", "hourly", "honest", "honestly", "honesty",
+        "honour", "honours", "honourable", "honor", "honors", "honorable",
+        "heir", "heirs", "heiress",
+    }
+)
+
+# Uncountable nouns that never take a plural in academic English. Deliberately
+# short: "researches", "trainings" and "evidences" are ordinary in Indian
+# English and in legal writing, so they are left alone.
+MASS_NOUN_PLURALS: dict[str, str] = {
+    "informations": "information",
+    "equipments": "equipment",
+    "feedbacks": "feedback",
+    "advices": "advice",
+    "knowledges": "knowledge",
+    "softwares": "software",
+    "datas": "data",
+    "furnitures": "furniture",
+    "homeworks": "homework",
+    "luggages": "luggage",
+}
+
+# Transitive verbs that take no preposition in standard usage.
+REDUNDANT_PREPOSITIONS: dict[str, str] = {
+    "discuss about": "discuss",
+    "discusses about": "discusses",
+    "discussed about": "discussed",
+    "discussing about": "discussing",
+    "emphasise on": "emphasise",
+    "emphasises on": "emphasises",
+    "emphasised on": "emphasised",
+    "emphasize on": "emphasize",
+    "emphasizes on": "emphasizes",
+    "emphasized on": "emphasized",
+}
+
+
+def _match_case(original: str, replacement: str) -> str:
+    """Carry the original capitalisation onto a replacement."""
+    if original.isupper() and len(original) > 1:
+        return replacement.upper()
+    if original[:1].isupper():
+        return replacement[:1].upper() + replacement[1:]
+    return replacement
+
+
 # ------------------------------------------------------------------ the mask
 
 
@@ -590,6 +671,11 @@ class _Mask:
         ranges.extend(self._reference_list(text))
         ranges.extend(self._resource_spans(text))
         self.ranges = _merge_ranges(ranges)
+        # The merged ranges are sorted and non-overlapping, so a lookup can
+        # binary-search them instead of walking the list. The prose builder asks
+        # this question once per character, which made a long document with many
+        # code spans and citations quadratic before.
+        self._range_starts = [start for start, _ in self.ranges]
 
     @staticmethod
     def _compute_line_starts(text: str) -> list[int]:
@@ -599,8 +685,6 @@ class _Mask:
         return starts
 
     def line_index(self, position: int) -> int:
-        import bisect
-
         return max(0, bisect.bisect_right(self._line_starts, position) - 1)
 
     def line_span(self, index: int) -> tuple[int, int]:
@@ -618,18 +702,25 @@ class _Mask:
         start, end = self.line_span(index)
         return self.text[start:end]
 
+    def _covering(self, position: int) -> int:
+        """Index of the merged range containing ``position``, or -1."""
+        index = bisect.bisect_right(self._range_starts, position) - 1
+        if index >= 0 and self.ranges[index][1] > position:
+            return index
+        return -1
+
     def blocked(self, start: int, end: int) -> bool:
         """True when any masked region overlaps the span."""
-        for range_start, range_end in self.ranges:
-            if range_start >= end:
-                return False
-            if range_end > start:
-                return True
-        return False
+        index = self._covering(start)
+        if index >= 0:
+            return True
+        following = bisect.bisect_right(self._range_starts, start)
+        return following < len(self.ranges) and self.ranges[following][0] < end
 
     def fully_blocked(self, start: int, end: int) -> bool:
         """True when a masked region covers the whole span (e.g. a code line)."""
-        return any(range_start <= start and range_end >= end for range_start, range_end in self.ranges)
+        index = self._covering(start)
+        return index >= 0 and self.ranges[index][1] >= end
 
     def line_count(self) -> int:
         return len(self._line_starts)
@@ -1134,6 +1225,9 @@ class _Run:
     profile: DiagnosticProfile = PROFILES[DEFAULT_PROFILE]
     rule_counts: dict[str, int] = field(default_factory=dict)
     spelling_stopped_early: bool = False
+    # Text a more specific rule has already explained, so the general spelling
+    # pass does not report the same characters a second time.
+    handled_spans: set[tuple[int, int]] = field(default_factory=set)
 
     def threshold(self, name: str, fallback: int) -> int:
         return int(self.profile.thresholds.get(name, fallback))
@@ -1418,12 +1512,18 @@ class DiagnosticEngine:
                 )
             )
 
+        # Contractions run first: "dont" is a punctuation fault, not a spelling
+        # one, and the spelling pass must not report the same word twice.
+        self._apostrophe_rules(clean, protected, add)
         if "spelling" in wanted and checker is not None:
             self._spelling_rules(clean, protected, checker, add)
+        self._article_rules(clean, protected, add)
         self._punctuation_rules(clean, protected, add)
         self._capitalization_rules(clean, protected, add, view.heading_segments)
         self._tone_rules(clean, protected, add)
         self._wordiness_rules(clean, protected, add)
+        self._usage_rules(clean, protected, add)
+        self._clarity_rules(clean, protected, add)
         self._repetition_rules(clean, add)
         self._sentence_rules(clean, protected, add)
         return _drop_contained(found)
@@ -1468,6 +1568,9 @@ class DiagnosticEngine:
                 continue
             seen.add((start, end))
             if any(span_start <= start < span_end for span_start, span_end in protected):
+                continue
+            if (start, end) in self._run.handled_spans:
+                # A contraction rule already explained this word.
                 continue
             if any(char.isdigit() for char in raw):
                 continue
@@ -1715,6 +1818,160 @@ class DiagnosticEngine:
                     (clean[letter].upper(),),
                     confidence="medium",
                 )
+
+    # -- contractions, articles, usage ------------------------------------
+
+    def _apostrophe_rules(self, clean: str, protected, add) -> None:
+        """Missing apostrophes in the contractions academic prose still uses.
+
+        Only a closed list of unambiguous forms is handled. Possessives
+        ("students" vs "students'") and homophones ("its" vs "it's") are left
+        alone because deciding them needs the sentence's meaning, and a rule
+        that guesses would be worse than no rule. Every span it reports is
+        claimed so the spelling pass does not also call the word unknown.
+        """
+        for form, expansion in MISSING_APOSTROPHE_FORMS.items():
+            for match in re.finditer(rf"\b{re.escape(form)}\b", clean.lower()):
+                start, end = match.start(), match.end()
+                if any(span_start <= start < span_end for span_start, span_end in protected):
+                    continue
+                original = clean[start:end]
+                self._run.handled_spans.add((start, end))
+                replacement = _match_case(original, expansion)
+                add(
+                    "punctuation.missing-apostrophe",
+                    "punctuation",
+                    f"\"{original}\" is missing its apostrophe.",
+                    f"Write \"{replacement}\" in academic prose. This is the "
+                    "contraction spelled out or punctuated.",
+                    start,
+                    end,
+                    (replacement,),
+                    confidence="high" if form not in HOMOPHONE_APOSTROPHE_FORMS else "medium",
+                )
+
+    def _article_rules(self, clean: str, protected, add) -> None:
+        """`a` / `an` chosen by sound, with the exceptions that matter.
+
+        Two sound classes are the whole difficulty: words spelled with a vowel
+        that begin with a consonant sound ("a university", "a European") and
+        words spelled with a silent h ("an hour"). Abbreviations are skipped
+        entirely, because "an MBA" and "a UN report" are both correct and the
+        letter does not tell you which sound it takes.
+        """
+        pattern = re.compile(r"\b(a|an|A|An|AN)\s+([A-Za-z][\w’'\-]*)")
+        for match in pattern.finditer(clean):
+            article, following = match.group(1), match.group(2)
+            start, end = match.start(1), match.start(1) + len(article)
+            if any(span_start <= start < span_end for span_start, span_end in protected):
+                continue
+            if looks_like_acronym(following):
+                # "an MBA", "a UN report": the letter does not tell you the sound.
+                continue
+            lowered = following.lower()
+            lowered_article = article.lower()
+            head = lowered.split("-")[0]
+            if lowered.startswith(CONSONANT_SOUND_VOWELS) or head in SILENT_H_WORDS or (
+                lowered in SILENT_H_WORDS
+            ):
+                sound = "vowel" if head in SILENT_H_WORDS or lowered in SILENT_H_WORDS else "consonant"
+            elif lowered[:1] in "aeiou":
+                sound = "vowel"
+            else:
+                sound = "consonant"
+            expected = "an" if sound == "vowel" else "a"
+            if lowered_article == expected:
+                continue
+            replacement = _match_case(article, expected)
+            # Letter-based cases are unambiguous; u- and h- words depend on the
+            # sound, and style guides differ about a few of them.
+            ambiguous = lowered[:1] in {"u", "h"}
+            add(
+                "grammar.article-an",
+                "agreement",
+                f"Use \"{replacement}\" before \"{following}\".",
+                f"\"{following}\" begins with a {sound} sound, so the article is "
+                f"\"{expected}\". The choice follows the sound, not the spelling.",
+                start,
+                end,
+                (replacement,),
+                confidence="medium" if ambiguous else "high",
+            )
+
+    def _usage_rules(self, clean: str, protected, add) -> None:
+        """High-precision usage faults: mass nouns and redundant prepositions.
+
+        Both families are small on purpose. Each entry is a phrase whose
+        correction no style guide disputes, and each one is reported at medium
+        confidence, because a checker that argues about debatable usage loses a
+        writer's trust faster than one that stays quiet.
+        """
+        for form, correction in MASS_NOUN_PLURALS.items():
+            for match in re.finditer(rf"\b{form}\b", clean.lower()):
+                start, end = match.start(), match.end()
+                if any(span_start <= start < span_end for span_start, span_end in protected):
+                    continue
+                original = clean[start:end]
+                replacement = _match_case(original, correction)
+                add(
+                    "grammar.mass-noun-plural",
+                    "agreement",
+                    f"\"{original}\" is not used as a plural in academic English.",
+                    f"The uncountable noun takes no plural here; write "
+                    f"\"{replacement}\" or count it explicitly (\"two findings\").",
+                    start,
+                    end,
+                    (replacement,),
+                    confidence="high",
+                )
+
+        for phrase, correction in REDUNDANT_PREPOSITIONS.items():
+            for match in re.finditer(rf"\b{re.escape(phrase)}\b", clean.lower()):
+                start, end = match.start(), match.end()
+                if any(span_start <= start < span_end for span_start, span_end in protected):
+                    continue
+                original = clean[start:end]
+                replacement = _match_case(original, correction)
+                add(
+                    "grammar.redundant-preposition",
+                    "agreement",
+                    f"\"{original}\" carries a preposition the verb does not take.",
+                    f"Write \"{replacement}\": the verb is already transitive, so the "
+                    "preposition is redundant rather than optional.",
+                    start,
+                    end,
+                    (replacement,),
+                    confidence="medium",
+                )
+
+    def _clarity_rules(self, clean: str, protected, add) -> None:
+        """A bare "This shows..." opener, the commonest ambiguity in a draft.
+
+        The pronoun is not wrong, but in a long argument the reader cannot tell
+        what it points at. No replacement is offered, because the fix is the
+        author's noun, not a phrase the engine can invent.
+        """
+        pattern = re.compile(
+            r"(?:(?<=^)|(?<=[.!?]\s)|(?<=\u0000)|(?<=\n))\s*(This|this|Which|which)\s+"
+            r"(is|are|was|were|shows|show|suggests|suggest|means|mean|implies|imply|"
+            r"indicates|indicate|reflects|reflect|explains|explain|demonstrates|demonstrate)"
+        )
+        for match in pattern.finditer(clean):
+            start, end = match.start(1), match.end(1)
+            if any(span_start <= start < span_end for span_start, span_end in protected):
+                continue
+            add(
+                "clarity.ambiguous-this",
+                "readability",
+                f"\"{clean[start:end]}\" does not name what it refers to.",
+                "Optional: add the noun it stands for (\"This pattern shows...\", "
+                "\"This finding suggests...\"). No replacement is offered, because the "
+                "engine cannot know which noun you mean.",
+                start,
+                end,
+                (),
+                confidence="low",
+            )
 
     # -- tone, wordiness, repetition --------------------------------------
 
