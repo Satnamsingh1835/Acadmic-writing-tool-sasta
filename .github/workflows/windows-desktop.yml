@@ -65,6 +65,17 @@ jobs:
           path: pyinstaller-attempt*.log
           if-no-files-found: ignore
           retention-days: 14
+      - name: Smoke-test the packaged application
+        shell: pwsh
+        run: |
+          $exe = Join-Path $PWD "dist\ScholarFlow\ScholarFlow.exe"
+          if (-not (Test-Path $exe)) { throw "Packaged executable missing: $exe" }
+          # Headless: starts the packaged loopback server (no window),
+          # checks bundled assets, editor rewrites for every profile,
+          # library add/search/CSL/document/passage/matrix flows, and
+          # on-disk database persistence in an isolated data directory.
+          & $exe --smoke-test
+          if ($LASTEXITCODE -ne 0) { throw "Packaged ScholarFlow smoke test failed with exit code $LASTEXITCODE" }
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:

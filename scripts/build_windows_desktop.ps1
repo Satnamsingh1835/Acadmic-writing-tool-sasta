@@ -18,6 +18,8 @@ if (-not $SkipTests) { & $Python -m pytest -q; if ($LASTEXITCODE -ne 0) { throw 
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed." }
 $ExePath = Join-Path $Root "dist\ScholarFlow\ScholarFlow.exe"
 if (-not (Test-Path $ExePath)) { throw "Build ended without expected executable: $ExePath" }
+& $ExePath --smoke-test
+if ($LASTEXITCODE -ne 0) { throw "Packaged ScholarFlow smoke test failed. See the SMOKE FAIL lines above; refusing to treat this build as verified." }
 Write-Host "Build folder: $(Join-Path $Root 'dist\ScholarFlow')"
 Write-Host "Executable:   $ExePath"
 Write-Host "Next test: launch it on this Windows PC and verify editor, Research Library, file indexing and clean shutdown."

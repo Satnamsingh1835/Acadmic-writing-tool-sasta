@@ -18,7 +18,7 @@ p { margin:.45rem 0; }
 .panel { background:#fff; border:1px solid var(--line); border-radius:12px; padding:20px; margin:0 0 18px; box-shadow:0 2px 6px rgba(30,45,60,.035); }
 .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; }
 label { display:flex; flex-direction:column; gap:5px; font-size:.88rem; font-weight:600; margin-bottom:10px; }
-input, select { min-width:0; width:100%; border:1px solid #cbd3dc; border-radius:7px; padding:10px; background:#fff; color:var(--ink); font:inherit; }
+input, select, textarea { min-width:0; width:100%; border:1px solid #cbd3dc; border-radius:7px; padding:10px; background:#fff; color:var(--ink); font:inherit; }
 input[type=checkbox] { width:auto; }
 button { border:0; border-radius:7px; padding:10px 15px; color:#fff; background:var(--accent); font:inherit; font-weight:650; cursor:pointer; margin:5px 4px 0 0; }
 button:hover { filter:brightness(.94); }
