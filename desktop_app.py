@@ -507,6 +507,84 @@ def run_smoke_checks(base_url: str, root: Path) -> list[tuple[str, bool, str]]:
             isinstance(report, dict)
             and report.get("engine", {}).get("external_services") == "none",
         )
+        record(
+            "workspace diagnostics report their version",
+            isinstance(report, dict)
+            and bool(report.get("engine", {}).get("version"))
+            and bool(report.get("engine", {}).get("ruleset_version")),
+            str(report.get("engine", {}).get("version")) if isinstance(report, dict) else "",
+        )
+
+        # The profiles must exist in the frozen build and actually change which
+        # style rules run, without changing the document text.
+        status, profile_payload = _smoke_json(
+            base_url, "GET", "/api/workspace/diagnostics/profiles"
+        )
+        profile_ids = [item.get("id") for item in profile_payload.get("profiles", [])]
+        record(
+            "workspace diagnostic profiles are published",
+            status == 200
+            and profile_ids == ["academic_standard", "formal_academic", "concise_academic"],
+            "HTTP " + str(status) + " profiles=" + ",".join(str(item) for item in profile_ids),
+        )
+        profile_text = (
+            "It is important to note that a number of studies dont agree, and the "
+            "field is kind of split."
+        )
+        statuses = {}
+        hashes = set()
+        for profile in ("academic_standard", "formal_academic", "concise_academic"):
+            status, profile_report = _smoke_json(
+                base_url,
+                "POST",
+                "/api/workspace/diagnostics",
+                {"text": profile_text, "profile": profile},
+            )
+            statuses[profile] = status
+            hashes.add(profile_report.get("text_sha256"))
+            if profile == "academic_standard":
+                standard_rules = {item.get("rule") for item in profile_report.get("diagnostics", [])}
+            if profile == "formal_academic":
+                formal_rules = {item.get("rule") for item in profile_report.get("diagnostics", [])}
+        record(
+            "workspace profile changes the rules but never the text",
+            all(status == 200 for status in statuses.values())
+            and len(hashes) == 1
+            and any(rule.startswith("wordiness.") for rule in standard_rules)
+            and not any(rule.startswith("wordiness.") for rule in formal_rules)
+            and any(rule.startswith("punctuation.missing-apostrophe") for rule in standard_rules),
+            "statuses=" + ",".join(str(status) for status in statuses.values()),
+        )
+        status, unknown = _smoke_json(
+            base_url, "POST", "/api/workspace/diagnostics", {"text": "x", "profile": "aggressive"}
+        )
+        record(
+            "workspace unknown profile is refused without echoing text",
+            status == 422 and "x" not in str(unknown.get("detail", "")),
+            "HTTP " + str(status),
+        )
+
+        # The MIT notice has to travel with the frozen build; when this gate runs
+        # from a source checkout the notice lives in packaging/third_party.
+        root = app_resource_dir()
+        license_file = next(
+            (
+                candidate
+                for candidate in (
+                    root / "licenses" / "pyspellchecker-LICENSE.txt",
+                    root / "packaging" / "third_party" / "pyspellchecker-LICENSE.txt",
+                )
+                if candidate.exists()
+            ),
+            None,
+        )
+        record(
+            "workspace third-party notices are packaged",
+            license_file is not None
+            and "MIT License" in license_file.read_text(encoding="utf-8")
+            and (root / "THIRD_PARTY_NOTICES.md").is_file(),
+            str(license_file) if license_file else "notice not found",
+        )
 
         marker = "smokeword" + uuid.uuid4().hex[:6]
         status, payload = _smoke_json(base_url, "POST", "/api/workspace/dictionary", {"word": marker})
@@ -554,6 +632,11 @@ def run_smoke_checks(base_url: str, root: Path) -> list[tuple[str, bool, str]]:
             "workspace bundled dictionary works when frozen",
             "workspace diagnostics separate errors from style",
             "workspace diagnostics stay local",
+            "workspace diagnostics report their version",
+            "workspace diagnostic profiles are published",
+            "workspace profile changes the rules but never the text",
+            "workspace unknown profile is refused without echoing text",
+            "workspace third-party notices are packaged",
             "workspace personal dictionary add",
             "workspace personal dictionary suppresses a word",
             "workspace personal dictionary remove",

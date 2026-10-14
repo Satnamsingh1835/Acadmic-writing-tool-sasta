@@ -7,7 +7,7 @@ webview_datas, webview_binaries, webview_hiddenimports = collect_all("webview")
 # spellchecker/resources/en.json.gz next to the frozen module.
 spellchecker_datas, spellchecker_binaries, spellchecker_hiddenimports = collect_all("spellchecker")
 hiddenimports = webview_hiddenimports + spellchecker_hiddenimports + collect_submodules("uvicorn") + collect_submodules("fastapi") + collect_submodules("starlette") + ["api", "academic_engine", "editor_service", "diagnostics", "spellchecker", "research_library.store", "research_library.discovery", "research_library.documents", "research_library.importers", "research_library.zotero"]
-a = Analysis(["desktop_app.py"], pathex=[str(root)], binaries=webview_binaries + spellchecker_binaries, datas=webview_datas + spellchecker_datas + [(str(root / "web"), "web")], hiddenimports=hiddenimports, hookspath=[str(root / "packaging" / "pyinstaller_hooks")], hooksconfig={}, runtime_hooks=[], excludes=["PyQt5", "PyQt6", "PySide2", "PySide6", "tkinter"], noarchive=False)
+a = Analysis(["desktop_app.py"], pathex=[str(root)], binaries=webview_binaries + spellchecker_binaries, datas=webview_datas + spellchecker_datas + [(str(root / "web"), "web"), (str(root / "packaging" / "third_party"), "licenses"), (str(root / "THIRD_PARTY_NOTICES.md"), ".")], hiddenimports=hiddenimports, hookspath=[str(root / "packaging" / "pyinstaller_hooks")], hooksconfig={}, runtime_hooks=[], excludes=["PyQt5", "PyQt6", "PySide2", "PySide6", "tkinter"], noarchive=False)
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="ScholarFlow", debug=False, bootloader_ignore_signals=False, strip=False, upx=True, console=False)
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=True, name="ScholarFlow")
