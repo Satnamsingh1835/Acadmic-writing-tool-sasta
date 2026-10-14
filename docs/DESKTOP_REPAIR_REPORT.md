@@ -111,9 +111,11 @@ These are configuration requirements, not defects:
 
 ### Get the build
 
-Download the artifact from the Actions run:
-<https://github.com/Satnamsingh1835/Acadmic-writing-tool-sasta/actions/runs/38514451564>
-→ **Artifacts** → `ScholarFlow-Windows-onedir.zip` (14-day retention).
+Download the artifact from the latest green **Windows desktop build** run for this
+branch: <https://github.com/Satnamsingh1835/Acadmic-writing-tool-sasta/pull/32/checks>
+→ the `build-windows-desktop` check → **Artifacts** → `ScholarFlow-Windows-onedir.zip`
+(14-day retention). The same run also uploads `scholarflow-smoke-log` with the
+per-check results produced by the packaged executable.
 
 Or build it yourself: install Python 3.12 (`py -3.12` must work), then in the
 repository root:
