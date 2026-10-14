@@ -272,3 +272,133 @@ def test_repeated_adjacent_word_is_reported_as_a_repetition(engine):
     assert item["original"].lower() == "the"
     assert text[item["start"]:item["end"]] == item["original"]
     assert item["confidence"] == "high"
+
+
+# -------------------------------------------------------- performance bounds
+
+
+def test_a_long_document_is_analysed_within_a_typing_budget(engine):
+    """A full paper has to stay comfortably inside one debounce interval.
+
+    The engine runs on the server thread while the writer keeps typing, so the
+    budget is deliberately generous (the check fails only on a real regression
+    such as the quadratic masking that a binary search replaced).
+    """
+    import time
+
+    paragraph = (
+        "The caste data was analysed carefully in this study (Gupta, 2000). "
+        "It is important to note that the findings are inconclusive, and the "
+        "authors dont agree about the mechanism.\n\n"
+    )
+    text = paragraph * 400  # ~120,000 characters, a long article
+    started = time.perf_counter()
+    report = engine.analyse(text)
+    elapsed = time.perf_counter() - started
+    assert report["characters"] == len(text)
+    assert elapsed < 6.0, f"{len(text):,} characters took {elapsed:.2f}s"
+    assert_offsets(text, report)
+
+
+def test_adversarial_documents_stay_bounded_too(engine):
+    """Nonsense, repetition and markup soup must not cost seconds."""
+    import time
+
+    cases = {
+        "unknown words": " ".join(["zzqv"] * 20_000),
+        "repeated typo": " ".join(["teh"] * 20_000),
+        "many citations": " ".join(["(Gupta, 2000)"] * 5_000),
+        "many code spans": " ".join(["`code`"] * 5_000),
+        "many fences": "```\nprose\n```\n" * 500,
+        "long URLs": " ".join(["https://example.org/a/b/c/d/e/f/g"] * 2_000),
+        "no spaces": "x" * 50_000,
+    }
+    for name, text in cases.items():
+        started = time.perf_counter()
+        report = engine.analyse(text)
+        elapsed = time.perf_counter() - started
+        assert report["counts"]["total"] >= 0
+        assert elapsed < 6.0, f"{name} took {elapsed:.2f}s"
+        assert_offsets(text, report)
+
+
+def test_the_report_says_when_it_stopped_early(engine):
+    report = engine.analyse(" ".join(["zzqv"] * 5_000))
+    assert report["truncated"] is True
+    assert any("stopped examining" in note for note in report["notes"]), report["notes"]
+
+
+# ------------------------------------------------------------- failure modes
+
+
+def test_a_missing_dictionary_degrades_to_the_other_rules(engine, monkeypatch):
+    """The engine must still check grammar and punctuation without the package."""
+    import diagnostics
+
+    def broken():
+        raise ImportError("pyspellchecker is not installed")
+
+    monkeypatch.setattr(diagnostics, "_spell_checker", broken)
+    report = engine.analyse("The datas was unclear ,and the authors dont agree.")
+    assert report["engine"]["spelling"] == "unavailable"
+    assert report["engine"]["spelling_available"] is False
+    rules_found = {item["rule"] for item in report["diagnostics"]}
+    assert "punctuation.missing-apostrophe" in rules_found
+    assert "grammar.mass-noun-plural" in rules_found
+    assert any("dictionary is unavailable" in note for note in report["notes"]), report["notes"]
+
+
+def test_an_unknown_category_or_a_non_string_is_rejected(engine):
+    with pytest.raises(ValueError):
+        engine.analyse("Some text.", categories=["spelling", "nonsense"])
+    with pytest.raises(TypeError):
+        engine.analyse(None)
+    with pytest.raises(ValueError):
+        engine.analyse("x" * 2_000_001)
+
+
+# ------------------------------------------------- counts and overlapping
+
+
+def test_several_findings_in_one_sentence_all_point_at_their_own_text(engine):
+    # The bare-pronoun rule only claims a *sentence-opening* "This" (a mid-sentence
+    # one is far too common to be worth reporting), so the sample opens a sentence.
+    text = "Teh authors dont discuss about the datas. This shows a lot of problems.\n"
+    report = engine.analyse(text)
+    assert_offsets(text, report)
+    found = rules(report)
+    for expected in (
+        "spelling.misspelling",
+        "punctuation.missing-apostrophe",
+        "grammar.redundant-preposition",
+        "grammar.mass-noun-plural",
+        "clarity.ambiguous-this",
+        "tone.vague-quantifier",
+    ):
+        assert expected in found, (expected, sorted(found))
+    starts = [item["start"] for item in report["diagnostics"]]
+    assert starts == sorted(starts), "findings are ordered by position"
+
+
+def test_overlapping_findings_are_both_kept(engine):
+    """A long sentence that is also wordy reports both, with their own ranges."""
+    text = "In order to clarify the matter, " + " ".join(["word"] * 60) + " and it continues.\n"
+    report = engine.analyse(text)
+    assert_offsets(text, report)
+    long_sentence = [item for item in report["diagnostics"] if item["rule"] == "readability.long-sentence"]
+    wordiness = [item for item in report["diagnostics"] if item["rule"] == "wordiness.longer-phrase"]
+    assert long_sentence and wordiness
+    assert wordiness[0]["start"] >= long_sentence[0]["start"]
+    assert wordiness[0]["end"] <= long_sentence[0]["end"]
+
+
+def test_citations_quotations_and_urls_are_not_prose(engine):
+    text = (
+        "Gupta (2000) argues that \"caste is not static\", as the DOI "
+        "https://doi.org/10.1000/xyz123 and the report (Singh and Rao, 2019) show.\n"
+    )
+    report = engine.analyse(text)
+    assert_offsets(text, report)
+    for item in report["diagnostics"]:
+        assert "doi.org" not in item["original"]
+        assert item["original"] not in {"10.1000/xyz123"}

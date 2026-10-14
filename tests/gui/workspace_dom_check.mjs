@@ -948,8 +948,58 @@ async function stage3Diagnostics() {
   );
   await waitFor(() => state().checks > checksBefore + 3, 8000);
   check("accepting a correction re-runs the analysis", state().checks > checksBefore + 3);
-  await fetch(`${BASE}/api/workspace/dictionary/tehnique`, { method: "DELETE" }).catch(() => {});
+
+  // --- autosave and diagnostics must not fight over the document ---
+  const correctedText = page.document.getElementById("editor").value;
+  check(
+    "the correction marks the document dirty for autosave",
+    /unsaved/i.test(page.document.getElementById("save-state").textContent),
+  );
+  const autosavedCorrection = await waitFor(
+    async () => (await serverDocument(documentId)).text === correctedText,
+    9000,
+  );
+  check("the correction reaches the server through autosave", autosavedCorrection);
+  // Keep typing while a check is in flight; the newer text must win everywhere.
+  const raced = correctedText + " An added clause typed while the check ran.";
+  type(page.window, page.document, raced);
+  const analysis = page.window.scholarflowWorkspace.analyse();
+  await sleep(60);
+  type(page.window, page.document, raced + " And one more.");
+  await analysis;
+  const racedFinal = page.document.getElementById("editor").value;
+  check(
+    "typing during an in-flight check is never rolled back",
+    racedFinal === raced + " And one more.",
+    `${racedFinal.length} characters`,
+  );
+  // The check that was in flight describes the older text, so it is dropped and
+  // a fresh one runs; the analysis must settle on what is on screen.
+  const settled = await waitFor(() => state().analysedText === racedFinal, 9000);
+  check(
+    "the analysis settles on the text that is on screen",
+    settled && state().analysedText === racedFinal,
+    settled ? "matches the editor" : "still describing an older version",
+  );
+  const racedSaved = await waitFor(async () => (await serverDocument(documentId)).text === racedFinal, 9000);
+  check("autosave stores the text the reader can see", racedSaved);
+
+  // --- the correction survives save, close and reopen ---
+  page.document.getElementById("save-document").click();
+  await waitFor(async () => (await serverDocument(documentId)).text === racedFinal, 8000);
+  await sleep(2700); // let the autosave timer that a keystroke scheduled fire
   page.window.close();
+  check("closing the window with a pending autosave does not throw", true, "window closed cleanly");
+  const reopened = await loadPage("/workspace");
+  await waitFor(() => reopened.window.scholarflowWorkspace.getState().documentId !== null);
+  check(
+    "a correction survives saving and reopening the document",
+    reopened.document.getElementById("editor").value === racedFinal,
+    `${reopened.document.getElementById("editor").value.length} characters after reopen`,
+  );
+  reopened.window.close();
+
+  await fetch(`${BASE}/api/workspace/dictionary/tehnique`, { method: "DELETE" }).catch(() => {});
 
   // --- the dictionary being unavailable is stated, not hidden ---
   const degraded = await loadPage("/workspace", { degradeSpelling: true });

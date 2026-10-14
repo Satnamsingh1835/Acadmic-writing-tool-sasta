@@ -15,6 +15,17 @@
     conservative: "Formal academic writing (minimal edits)",
   };
 
+  /* True once the page is being torn down.
+   *
+   * Autosave and the analysis request can land after the window has gone (the
+   * reader closes the app, or a tab is discarded). There is no document to
+   * update at that point, so the UI helpers below stop quietly instead of
+   * throwing inside a promise nobody is waiting for.
+   */
+  function pageIsGone() {
+    return typeof document === "undefined" || !document.getElementById;
+  }
+
   const byId = (id) => document.getElementById(id);
   const elements = {
     title: byId("doc-title"),
@@ -96,12 +107,14 @@
   }
 
   function setSaveState(text, kind = "") {
+    if (pageIsGone()) return;
     elements.saveState.textContent = text;
     elements.saveState.classList.toggle("is-dirty", kind === "dirty");
     elements.saveState.classList.toggle("is-error", kind === "error");
   }
 
   function showStatus(message) {
+    if (pageIsGone()) return;
     elements.statusMessage.textContent = message;
     elements.statusBanner.hidden = !message;
     window.clearTimeout(state.statusTimer);
@@ -113,6 +126,7 @@
   }
 
   function showError(message, retry) {
+    if (pageIsGone()) return;
     elements.errorMessage.textContent = message;
     elements.errorBanner.hidden = false;
     state.retry = retry || null;
@@ -121,6 +135,7 @@
   }
 
   function clearError() {
+    if (pageIsGone()) return;
     elements.errorBanner.hidden = true;
     state.retry = null;
   }
