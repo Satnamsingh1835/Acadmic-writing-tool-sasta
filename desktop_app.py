@@ -232,13 +232,26 @@ def run_smoke_checks(base_url: str, root: Path) -> list[tuple[str, bool, str]]:
         checks.append((name, bool(passed), detail))
 
     web_dir = root / "web"
-    for asset in ("index.html", "app.js", "styles.css", "library.html", "library.js", "library.css"):
+    for asset in (
+        "index.html",
+        "app.js",
+        "styles.css",
+        "library.html",
+        "library.js",
+        "library.css",
+        "workspace.html",
+        "workspace.js",
+        "workspace.css",
+    ):
         record("bundled asset web/" + asset, (web_dir / asset).is_file())
 
     for name, path in (
         ("editor page /", "/"),
         ("editor script /assets/app.js", "/assets/app.js"),
         ("editor styles /assets/styles.css", "/assets/styles.css"),
+        ("writing workspace page /workspace", "/workspace"),
+        ("workspace script /assets/workspace.js", "/assets/workspace.js"),
+        ("workspace styles /assets/workspace.css", "/assets/workspace.css"),
         ("library page /library", "/library"),
         ("library script /assets/library.js", "/assets/library.js"),
         ("library styles /assets/library.css", "/assets/library.css"),
@@ -367,11 +380,110 @@ def run_smoke_checks(base_url: str, root: Path) -> list[tuple[str, bool, str]]:
         record("library matrix add", False, "no work id from add-reference check")
         record("library matrix list", False, "no work id from add-reference check")
 
+    created_text = (
+        "# Synthetic smoke draft\n\nIt is important to note that this passage exists "
+        "only for automated smoke checks."
+    )
+    saved_text = "# Synthetic smoke draft\n\nThe synthetic passage was edited by the smoke check."
+    status, created = _smoke_json(
+        base_url,
+        "POST",
+        "/api/documents",
+        {"title": "Synthetic smoke document " + marker, "text": created_text},
+    )
+    document_id = created.get("id") if isinstance(created, dict) else None
+    record("writing workspace create document", status == 200 and bool(document_id), "HTTP " + str(status))
+
+    if document_id:
+        document_path = "/api/documents/" + document_id
+        title = "Synthetic smoke document " + marker
+        status, saved = _smoke_json(
+            base_url,
+            "PUT",
+            document_path,
+            {"title": title, "text": saved_text, "expected_revision": 1, "reason": "manual"},
+        )
+        revision = saved.get("revision") if isinstance(saved, dict) else None
+        record(
+            "writing workspace save document",
+            status == 200 and isinstance(revision, int) and revision > 1,
+            "HTTP " + str(status),
+        )
+
+        status, reopened = _smoke_json(base_url, "GET", document_path)
+        record(
+            "writing workspace reopen document",
+            status == 200 and reopened.get("text") == saved_text,
+            "HTTP " + str(status),
+        )
+
+        status, payload = _smoke_json(base_url, "GET", document_path + "/revisions")
+        history = payload.get("revisions", []) if isinstance(payload, dict) else []
+        record(
+            "writing workspace revision history",
+            status == 200 and any(entry.get("revision") == 1 for entry in history),
+            "HTTP " + str(status) + " revisions=" + str(len(history)),
+        )
+
+        status, restored = _smoke_json(base_url, "POST", document_path + "/revisions/1/restore")
+        record(
+            "writing workspace restore revision",
+            status == 200 and restored.get("text") == created_text,
+            "HTTP " + str(status),
+        )
+        status, payload = _smoke_json(base_url, "GET", document_path + "/revisions")
+        history = payload.get("revisions", []) if isinstance(payload, dict) else []
+        before_restore = [entry for entry in history if entry.get("reason") == "before-restore"]
+        record(
+            "writing workspace restore keeps the replaced text",
+            status == 200 and bool(before_restore),
+            "HTTP " + str(status),
+        )
+        if before_restore:
+            status, reverted = _smoke_json(
+                base_url,
+                "POST",
+                document_path + "/revisions/" + str(before_restore[0].get("revision")) + "/restore",
+            )
+            record(
+                "writing workspace restore is reversible",
+                status == 200 and reverted.get("text") == saved_text,
+                "HTTP " + str(status),
+            )
+        else:
+            record("writing workspace restore is reversible", False, "no before-restore snapshot")
+
+        status, _conflict = _smoke_json(
+            base_url,
+            "PUT",
+            document_path,
+            {"title": "stale write", "text": "stale write", "expected_revision": 1, "reason": "manual"},
+        )
+        record("writing workspace stale save refused", status == 409, "HTTP " + str(status))
+        status, after = _smoke_json(base_url, "GET", document_path)
+        record(
+            "writing workspace text survived the refused write",
+            status == 200 and after.get("text") == saved_text,
+            "HTTP " + str(status),
+        )
+    else:
+        for name in (
+            "writing workspace save document",
+            "writing workspace reopen document",
+            "writing workspace revision history",
+            "writing workspace restore revision",
+            "writing workspace restore keeps the replaced text",
+            "writing workspace restore is reversible",
+            "writing workspace stale save refused",
+            "writing workspace text survived the refused write",
+        ):
+            record(name, False, "no document id from the create check")
+
     return checks
 
 
 def _smoke_persistence_check() -> tuple[str, bool, str]:
-    """Reopen the smoke database from disk to prove writes persisted."""
+    """Reopen the smoke databases from disk to prove writes persisted."""
     try:
         from research_library.store import ResearchLibrary, default_data_dir
         db_path = default_data_dir() / "research-library.sqlite3"
@@ -385,6 +497,24 @@ def _smoke_persistence_check() -> tuple[str, bool, str]:
         )
     except Exception as exc:  # Report the type only; never log contents.
         return ("library database persisted to disk", False, type(exc).__name__)
+
+
+def _smoke_document_persistence_check() -> tuple[str, bool, str]:
+    """Reopen the writing-workspace database to prove the text persisted."""
+    try:
+        from document_store import DocumentStore
+        from research_library.store import default_data_dir
+        db_path = default_data_dir() / "writing-documents.sqlite3"
+        if not db_path.is_file():
+            return ("writing workspace database persisted to disk", False, "database file missing")
+        store = DocumentStore(db_path)
+        return (
+            "writing workspace database persisted to disk",
+            store.count() >= 1,
+            "documents=" + str(store.count()),
+        )
+    except Exception as exc:  # Report the type only; never log contents.
+        return ("writing workspace database persisted to disk", False, type(exc).__name__)
 
 
 def smoke_main(argv: list[str] | None = None) -> int:
@@ -418,6 +548,7 @@ def smoke_main(argv: list[str] | None = None) -> int:
         _stop_server(server, thread, listener)
         server = thread = listener = None
         checks.append(_smoke_persistence_check())
+        checks.append(_smoke_document_persistence_check())
         failed = 0
         for name, passed, detail in checks:
             line = ("SMOKE PASS " if passed else "SMOKE FAIL ") + name + ((" :: " + detail) if detail else "")

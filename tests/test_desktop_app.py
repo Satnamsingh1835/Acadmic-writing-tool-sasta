@@ -41,6 +41,11 @@ def test_smoke_checks_pass_against_live_server(tmp_path, monkeypatch):
     assert any("editor rewrite profile=polish" in name for name in names)
     assert any("library add reference" in name for name in names)
     assert any("library passage search" in name for name in names)
+    # The packaged app must ship and exercise the writing workspace too.
+    assert any("bundled asset web/workspace.js" in name for name in names)
+    assert any("writing workspace page /workspace" in name for name in names)
+    assert any("writing workspace save document" in name for name in names)
+    assert any("writing workspace stale save refused" in name for name in names)
 
 
 def test_smoke_main_uses_isolated_data_and_never_imports_webview(tmp_path, monkeypatch):
@@ -81,6 +86,8 @@ def test_smoke_main_survives_a_windowed_build_with_no_stdout(tmp_path, monkeypat
     assert "SMOKE RESULT: PASS" in text
     assert "SMOKE FAIL" not in text
     assert "library add reference" in text
+    assert "writing workspace save document" in text
+    assert "writing workspace database persisted to disk" in text
 
 
 def test_smoke_report_path_defaults_inside_the_data_dir(tmp_path, monkeypatch):
