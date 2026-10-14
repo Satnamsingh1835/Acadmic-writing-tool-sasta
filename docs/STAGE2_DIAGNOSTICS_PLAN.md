@@ -123,7 +123,7 @@ guides disagree about (reported at medium confidence with an explanation).
 ## 8. Test commands and results
 
 ```
-python -m pytest -q                                   # 215 passed
+python -m pytest -q                                   # 216 passed
 python -m tools.repository_check                      # 0 failures
 python -m flake8 . --count --select=E9,F63,F7,F82      # clean
 node tests/gui/workspace_dom_check.mjs http://127.0.0.1:<port>
@@ -132,9 +132,22 @@ python desktop_app.py --smoke-test --smoke-report <file>
                                                       # 53 checks PASS / 0 FAIL
 ```
 
-Measured analysis time on this machine: 10,000 characters in ~120 ms,
-200,000 characters in ~100 ms (chunked at paragraph boundaries, dictionary
-loaded once per process).
+Measured analysis time on this machine: 10,000 characters in ~120 ms;
+474,000 characters (a full paper with heavy repetition) in 1.2 s (chunked at
+paragraph boundaries, dictionary loaded once per process).
+
+### 8.1 Hardening after the CodeQL review (commit `552566f`)
+
+CodeQL reported three high-severity catastrophic-backtracking (ReDoS) alerts on
+user-supplied text — the code-fence matcher, the reference-list heading matcher
+and the "there is ... " agreement pattern. All three are rewritten without
+ambiguous repetition, and `test_pathological_input_cannot_stall_the_analysis`
+pins five adversarial inputs under a 5 s budget. That test then exposed a
+quadratic step in the containment de-duplication (20 s for a document with
+thousands of repeated words), which is now O(n log n) and grouped per rule.
+A single rule is capped at `MAX_FINDINGS_PER_RULE = 120` findings so one
+pattern cannot swamp the report or the marker layer; the report flags
+`truncated` when any cap is reached.
 
 ## 9. Verification that is still outstanding
 
