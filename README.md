@@ -249,6 +249,8 @@ python -m pip install -r requirements-research.txt
 
 PDF/DOCX extraction needs the optional dependencies. OCR for image-only scans is not bundled. A record returned by Crossref/OpenAlex is metadata, not proof it supports a claim. Zotero import is read-only. Private Web API imports require `ZOTERO_USER_ID` and `ZOTERO_API_KEY` in the local environment; never commit credentials.
 
+The page opens with your existing records already listed. Use **Add a reference** to save a record manually; it is written to the local SQLite database and remains available after restarting the app.
+
 ## Windows desktop package
 
 Build the native pywebview one-folder distribution on Windows 11 with Python 3.12 and Microsoft Edge WebView2 Runtime:
@@ -258,6 +260,16 @@ Build the native pywebview one-folder distribution on Windows 11 with Python 3.1
 ```
 
 The output is `dist\ScholarFlow\ScholarFlow.exe`. The app starts the existing FastAPI backend on loopback and stops it when its window closes. The GitHub Actions workflow builds an artifact on Windows, but the target PC still requires a manual launch/close test. See [Windows desktop and REA runbook](docs/REA_WINDOWS_RUNBOOK.md).
+
+### Verifying a build without opening a window
+
+The build script and the Windows workflow run a headless self-check after packaging:
+
+```powershell
+.\dist\ScholarFlow\ScholarFlow.exe --smoke-test --smoke-report smoke-test.log
+```
+
+It starts the same local server the window uses (without opening a window) and checks the bundled assets, all three editor profiles, the no-provider fallback, library health/settings, adding a reference and searching for it, CSL JSON import, TXT document indexing, passage search, the literature matrix, and that the database persists on disk. Results are written to the report file and printed when a console is attached. The run uses an isolated temporary data directory and prints only check names and HTTP status codes, so it never reads or logs your library or passages. Exit code `0` means every check passed.
 
 ## REA readiness and behavioral study
 
