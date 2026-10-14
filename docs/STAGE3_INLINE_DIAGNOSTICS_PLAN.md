@@ -182,8 +182,8 @@ in `localStorage`; neither is uploaded anywhere.
 ## 8. Test commands and results
 
 ```
-python -m pytest -q                                   # 304 passed (all 130 GUI checks included)
-python -m tools.repository_check                      # 169 files, 0 failures
+python -m pytest -q                                   # 310 passed (all 184 GUI checks included)
+python -m tools.repository_check                      # 170 files, 0 failures
 python -m flake8 . --count --select=E9,F63,F7,F82      # clean
 node tests/gui/workspace_dom_check.mjs http://127.0.0.1:8800
                                                       # GUI RESULT: PASS (130/130), twice
@@ -217,6 +217,17 @@ and none of them can be seen in ordinary prose:
 | The whitespace-run pattern retried the run at every offset | 8.3 s on 40,000 spaces | 61 ms |
 | The comma-splice rule rebuilt both sides of every comma | 24.1 s on 40,000 commas | 71 ms |
 | The Markdown link patterns rescan open brackets | 703 ms on 40,000 brackets | 125 ms |
+
+**The analysis belongs to the text it was made from.** Two defects in that
+interaction were found by driving the real page and fixed in `f8714a9`: an
+autosave (2.5 s after typing) cleared the findings, so the panel announced "no
+issues found" about text nobody had re-checked and the card a person was reading
+closed itself; and start-up could write a stored document over text typed while
+the document list was still loading, which belonged to no draft and to no
+revision. The editor now clears findings only when it writes stored text or
+opens another document, keeps text that no document owns, and validates every
+range — and the original text at that range — immediately before writing, so a
+suggestion that no longer matches is refused instead of spliced.
 
 `tools/diagnostics_timing.py` sweeps 43 paste shapes at two sizes and prints a
 ratio, so a scan that is quadratic (ratio ≈ 4) stands out from one that is

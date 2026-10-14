@@ -10,8 +10,9 @@ nothing, and the backend tests never render anything.
 
 | Layer | Verified here | How |
 |---|---|---|
-| Rules, offsets, classifications, profiles | **Yes** | `pytest` (282 tests), `tools.repository_check`, `flake8` |
-| Interface behaviour (markers exist, labels, filters, Accept, Dismiss, stale refusal, anchored-pop-up maths, undo-preserving edits) | **Yes, in jsdom** | `tests/gui/workspace_dom_check.mjs`, 130/130 checks |
+| Rules, offsets, classifications, profiles | **Yes** | `pytest` (310 tests), `tools.repository_check`, `flake8` |
+| Text integrity (the document is the same text before and after a check, an accept changes only its own range, a save does not wipe the analysis, save/reopen is byte-identical, typing during a check survives) | **Yes, in jsdom and at the data level** | the "Text integrity under diagnostics and refinement" stage in `tests/gui/workspace_dom_check.mjs` and `tests/test_workspace_text_integrity.py` |
+| Interface behaviour (markers exist, labels, filters, Accept, Dismiss, stale refusal, anchored-pop-up maths, undo-preserving edits) | **Yes, in jsdom** | `tests/gui/workspace_dom_check.mjs`, 184/184 checks |
 | Packaged build starts, serves the workspace, and its API answers | **Yes, in the Windows CI smoke gate** | `desktop_app.py --smoke-test`, 58 checks |
 | **What a human sees in the packaged window** | **Not yet observed** | this procedure — nobody has run it yet, and no result below may be reported as passing until someone does |
 
@@ -137,6 +138,14 @@ Expected findings, in the writer's terms:
       re-checks instead.
 
 ### 2.7 Corrections survive save and reopen
+
+> Automated equivalent: the integrity stage accepts a correction, saves, reloads
+> the page and compares the reopened text with what was stored, character for
+> character. It also checks that the autosave which runs 2.5 s after typing does
+> not empty the findings panel — that was a real defect, fixed in
+> `f8714a9`, and it is worth a look here because it is the interaction a person
+> notices first.
+
 
 - [ ] Accept one more correction, save (`Ctrl+S`), close the application.
 - [ ] Reopen the application. The Workspace restores the document **with the
