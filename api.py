@@ -18,6 +18,14 @@ from research_library.importers import import_csl_records
 from research_library.zotero import ZoteroConnectionError, import_zotero_items
 
 from academic_engine import AcademicWritingEngine
+from document_store import (
+    REASON_AUTOSAVE,
+    REASON_MANUAL,
+    DocumentConflictError,
+    DocumentNotFoundError,
+    DocumentStore,
+    DocumentValidationError,
+)
 from editor_service import AcademicEditorService
 
 MAX_TEXT_CHARS = int(os.getenv("MAX_TEXT_CHARS", "500000"))
@@ -185,6 +193,120 @@ async def review_file(
         profile,
         include_refined_text,
     )
+
+
+# Writing workspace. Documents are stored locally in SQLite; the service never
+# contacts an external provider on its own.
+_document_store: DocumentStore | None = None
+_document_store_path: str | None = None
+
+
+def get_document_store() -> DocumentStore:
+    global _document_store, _document_store_path
+    db_path = str(default_data_dir() / "writing-documents.sqlite3")
+    if _document_store is None or _document_store_path != db_path:
+        _document_store = DocumentStore(db_path)
+        _document_store_path = db_path
+    return _document_store
+
+
+class DocumentCreateRequest(BaseModel):
+    title: str = Field(default="", max_length=300)
+    text: str = Field(default="", max_length=2_000_000)
+
+
+class DocumentSaveRequest(BaseModel):
+    title: Optional[str] = Field(default=None, max_length=300)
+    text: Optional[str] = Field(default=None, max_length=2_000_000)
+    expected_revision: Optional[int] = Field(default=None, ge=1)
+    reason: str = Field(default=REASON_MANUAL, max_length=32)
+
+
+@app.get("/workspace", include_in_schema=False)
+def writing_workspace_home():
+    return FileResponse(WEB_DIR / "workspace.html")
+
+
+@app.get("/api/documents")
+def workspace_list_documents(q: str = "", limit: int = 200):
+    if len(q) > 200:
+        raise HTTPException(422, "Search text must be 200 characters or fewer.")
+    store = get_document_store()
+    return {"documents": store.list(query=q, limit=max(1, min(limit, 500)))}
+
+
+@app.post("/api/documents")
+def workspace_create_document(request: DocumentCreateRequest):
+    try:
+        return get_document_store().create(title=request.title or None, text=request.text)
+    except DocumentValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/documents/{document_id}")
+def workspace_get_document(document_id: str):
+    try:
+        return get_document_store().get(document_id)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.put("/api/documents/{document_id}")
+def workspace_save_document(document_id: str, request: DocumentSaveRequest):
+    if request.reason not in {REASON_MANUAL, REASON_AUTOSAVE}:
+        raise HTTPException(400, "Clients may save with reason 'manual' or 'autosave'.")
+    store = get_document_store()
+    try:
+        return store.save(
+            document_id,
+            title=request.title,
+            text=request.text,
+            expected_revision=request.expected_revision,
+            reason=request.reason,
+        )
+    except DocumentNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except DocumentConflictError as exc:
+        raise HTTPException(
+            409,
+            "This document was changed in another window. Reload it before saving.",
+        ) from exc
+    except DocumentValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.delete("/api/documents/{document_id}")
+def workspace_delete_document(document_id: str):
+    try:
+        document = get_document_store().delete(document_id)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"id": document["id"], "archived": document["archived"]}
+
+
+@app.post("/api/documents/{document_id}/restore")
+def workspace_restore_document(document_id: str):
+    try:
+        return get_document_store().restore_document(document_id)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.get("/api/documents/{document_id}/revisions")
+def workspace_document_revisions(document_id: str):
+    try:
+        revisions = get_document_store().revisions(document_id)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"revisions": revisions}
+
+
+@app.post("/api/documents/{document_id}/revisions/{revision}/restore")
+def workspace_restore_document_revision(document_id: str, revision: int):
+    try:
+        return get_document_store().restore_revision(document_id, revision)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 # Local research-library endpoints. They operate on a user-local SQLite database;
