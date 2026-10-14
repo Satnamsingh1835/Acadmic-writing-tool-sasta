@@ -13,3 +13,7 @@ dist/
 *.sqlite3
 *.sqlite3-shm
 *.sqlite3-wal
+
+# Node modules for the jsdom GUI checks (installed on demand).
+tests/gui/node_modules/
+tests/gui/package-lock.json

@@ -1,0 +1,13 @@
+{
+  "name": "scholarflow-gui-checks",
+  "private": true,
+  "version": "1.0.0",
+  "description": "DOM-level GUI checks for the ScholarFlow pages, run from pytest.",
+  "type": "module",
+  "scripts": {
+    "check": "node workspace_dom_check.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^24.1.3"
+  }
+}
