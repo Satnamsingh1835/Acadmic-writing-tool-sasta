@@ -5,6 +5,8 @@ Statuses describe this repository change, not local Windows acceptance.
 | Feature | Status | Notes |
 |---|---|---|
 | Existing academic web editor | Existing | FastAPI/static web editor preserved. |
+| Writing workspace (documents, autosave, revisions, recovery) | Implemented | `/workspace`. API, DOM-level GUI and packaged smoke checks; the window itself still needs a Windows PC. |
+| Inline diagnostics (32 local rules, profiles, Accept/Dismiss) | Implemented | Deterministic and offline; spelling dictionary bundled (MIT). Marker alignment, the anchored pop-up and native undo still need a real rendering engine — see `docs/WINDOWS_DIAGNOSTICS_TEST.md`. |
 | Local research library | Implemented; Windows UI acceptance untested | SQLite + optional FTS5 catalogue. Includes a manual "Add a reference" form wired to POST /api/library/work. |
 | CSL JSON import | Implemented in this PR | Other citation export formats are future work. |
 | Zotero Desktop/Web import | Implemented; real library untested | Read-only. Web imports require user-provided local credentials. |

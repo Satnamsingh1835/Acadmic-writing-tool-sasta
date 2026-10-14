@@ -95,6 +95,33 @@ uvicorn api:app --reload
 Then open `http://127.0.0.1:8000`. API documentation remains available at
 `/docs`.
 
+### Writing workspace and inline diagnostics
+
+`/workspace` is a document-based writing surface: local storage with autosave and
+crash recovery, revision history, Markdown structure tools, an outline, and
+inline diagnostics that run **entirely on this computer**. Issues are marked over
+the exact characters; clicking a marker opens a suggestion next to it with the
+original passage, the proposed correction, an explanation and Accept/Dismiss.
+Accepting a correction validates the range against the current text first, so a
+stale suggestion is refused rather than applied to the wrong words.
+
+Useful to know:
+
+- 32 deterministic rules across spelling, grammar, punctuation, capitalisation,
+  sentence structure, clarity, concision, academic style and repetition.
+- Names, caste and community terms, place names, field vocabulary and survey
+  abbreviations are protected, so an unfamiliar word is never "corrected".
+- Three profiles (Academic Standard, Formal Academic Writing, Concise Academic
+  Writing) choose which optional **style** rules run; spelling and the reliable
+  grammar rules always run, and no profile ever edits your text.
+- The spelling dictionary is bundled (`pyspellchecker`, MIT — see
+  `THIRD_PARTY_NOTICES.md`), so nothing is sent anywhere and no API key, account
+  or internet connection is needed. The quick editor's optional AI pass remains a
+  separate, off-by-default switch.
+
+`docs/WINDOWS_DIAGNOSTICS_TEST.md` is the checklist for verifying this in the
+packaged Windows application.
+
 Optional model-assisted rewriting is enabled only when `LLM_API_KEY` is set.
 When the **AI enhance** switch is off, no passage is sent to an external model.
 When it is on, model output is rejected if it removes, changes, or introduces
