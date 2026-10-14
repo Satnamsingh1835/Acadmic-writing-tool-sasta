@@ -26,6 +26,7 @@ from document_store import (
     DocumentStore,
     DocumentValidationError,
 )
+from diagnostics import MAX_DOCUMENT_CHARS, DiagnosticEngine, PersonalDictionary
 from editor_service import AcademicEditorService
 
 MAX_TEXT_CHARS = int(os.getenv("MAX_TEXT_CHARS", "500000"))
@@ -307,6 +308,98 @@ def workspace_restore_document_revision(document_id: str, revision: int):
         return get_document_store().restore_revision(document_id, revision)
     except DocumentNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
+
+
+# Inline diagnostics for the writing workspace. Everything runs locally: the
+# rules are deterministic, the dictionary ships with the application, and no
+# document text is logged or sent anywhere.
+class DiagnosticsRequest(BaseModel):
+    # The length limit is enforced by the engine on purpose: a pydantic
+    # max_length error echoes a snippet of the document back to the client,
+    # which would put academic text into an error response.
+    text: str = Field(default="")
+    document_id: Optional[str] = None
+    revision: Optional[int] = None
+    categories: Optional[list[str]] = None
+
+
+class DictionaryRequest(BaseModel):
+    word: str = Field(min_length=1, max_length=64)
+
+
+_personal_dictionary: PersonalDictionary | None = None
+_personal_dictionary_path: str | None = None
+_diagnostics_engine: DiagnosticEngine | None = None
+_diagnostics_engine_key: tuple[str, ...] | None = None
+
+
+def get_personal_dictionary() -> PersonalDictionary:
+    global _personal_dictionary, _personal_dictionary_path
+    path = str(default_data_dir() / "writing-dictionary.json")
+    if _personal_dictionary is None or _personal_dictionary_path != path:
+        _personal_dictionary = PersonalDictionary(path)
+        _personal_dictionary_path = path
+    return _personal_dictionary
+
+
+def get_diagnostics_engine() -> DiagnosticEngine:
+    """One engine per personal dictionary, so a new word takes effect at once."""
+    global _diagnostics_engine, _diagnostics_engine_key
+    words = tuple(get_personal_dictionary().words())
+    if _diagnostics_engine is None or _diagnostics_engine_key != words:
+        _diagnostics_engine = DiagnosticEngine(words)
+        _diagnostics_engine_key = words
+    return _diagnostics_engine
+
+
+@app.get("/api/workspace/diagnostics/categories")
+def workspace_diagnostic_categories():
+    return {
+        "categories": DiagnosticEngine.categories(),
+        "limits": {"max_characters": MAX_DOCUMENT_CHARS},
+        "privacy": (
+            "Diagnostics run locally with a bundled dictionary and deterministic "
+            "rules. No document text leaves this computer and nothing is logged."
+        ),
+    }
+
+
+@app.post("/api/workspace/diagnostics")
+def workspace_diagnostics(request: DiagnosticsRequest):
+    try:
+        report = get_diagnostics_engine().analyse(
+            request.text,
+            categories=request.categories,
+            document_id=request.document_id,
+            revision=request.revision,
+        )
+    except ValueError as exc:
+        # Messages describe the request, never the document contents.
+        raise HTTPException(422, str(exc)) from exc
+    return report
+
+
+@app.get("/api/workspace/dictionary")
+def workspace_dictionary():
+    return {"words": get_personal_dictionary().words()}
+
+
+@app.post("/api/workspace/dictionary")
+def workspace_dictionary_add(request: DictionaryRequest):
+    try:
+        words = get_personal_dictionary().add(request.word)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"words": words}
+
+
+@app.delete("/api/workspace/dictionary/{word}")
+def workspace_dictionary_remove(word: str):
+    try:
+        words = get_personal_dictionary().remove(word)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"words": words}
 
 
 # Local research-library endpoints. They operate on a user-local SQLite database;
