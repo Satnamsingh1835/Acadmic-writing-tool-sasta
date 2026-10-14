@@ -182,7 +182,7 @@ in `localStorage`; neither is uploaded anywhere.
 ## 8. Test commands and results
 
 ```
-python -m pytest -q                                   # 304 passed
+python -m pytest -q                                   # 304 passed (all 130 GUI checks included)
 python -m tools.repository_check                      # 169 files, 0 failures
 python -m flake8 . --count --select=E9,F63,F7,F82      # clean
 node tests/gui/workspace_dom_check.mjs http://127.0.0.1:8800
@@ -223,6 +223,14 @@ ratio, so a scan that is quadratic (ratio ≈ 4) stands out from one that is
 linear (ratio ≈ 2). It reports `0 flagged` now; the test suite keeps loose
 ceilings that catch an order-of-magnitude regression without failing on a slow
 shared runner.
+
+All of the above was run on the final commit `88be026`, and the same commit is
+green in CI: the Ubuntu job (`test`, Python 3.10), the Windows job
+(`build-windows-desktop`, Python 3.12, which also runs the packaged smoke test)
+and `check (release)`. The earlier red runs were the timing assertion: the
+budgets were too tight for a shared runner and the scans behind them were
+genuinely quadratic, so the fix was to make the code fast and keep the test as a
+coarse regression guard rather than to loosen the test on its own.
 
 ## 9. Known false positives and honest limitations
 
