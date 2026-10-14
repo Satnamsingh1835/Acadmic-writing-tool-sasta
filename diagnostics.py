@@ -46,6 +46,7 @@ from text_parser import _WORD_RE
 
 MAX_DOCUMENT_CHARS = 2_000_000
 MAX_FINDINGS = 600
+MAX_FINDINGS_PER_RULE = 120
 MAX_SPELLING_SUGGESTIONS = 60
 CHUNK_TARGET_CHARS = 4_000
 LONG_SENTENCE_WORDS = 35
@@ -434,13 +435,21 @@ class _Mask:
         for index, line in enumerate(text.split("\n")):
             stripped = line.strip()
             if open_at is None:
-                match = re.match(r"^(`{3,}|~{3,})\s*[^\s`]*\s*$", stripped)
+                match = re.match(r"^(`{3,}|~{3,})", stripped)
                 if match:
-                    open_at = self._line_starts[index]
-                    fence_char = match.group(1)[0]
-                    fence_len = len(match.group(1))
+                    # Only the fence character may repeat; the optional info
+                    # string is checked with string operations instead of a
+                    # second whitespace quantifier, which would backtrack
+                    # badly on a line of spaces in a large document.
+                    rest = stripped[match.end():]
+                    if not rest or (
+                        " " not in rest and "\t" not in rest and "`" not in rest and "~" not in rest
+                    ):
+                        open_at = self._line_starts[index]
+                        fence_char = match.group(1)[0]
+                        fence_len = len(match.group(1))
                 continue
-            if re.match(rf"^{re.escape(fence_char)}{{{fence_len},}}\s*$", stripped):
+            if re.fullmatch(rf"{re.escape(fence_char)}{{{fence_len},}}", stripped):
                 start, end = self.line_span(index)
                 ranges.append((open_at, end))
                 open_at = None
@@ -462,15 +471,26 @@ class _Mask:
                 ranges.append(span)
         return ranges
 
-    @staticmethod
-    def _reference_list(text: str) -> list[tuple[int, int]]:
-        match = re.search(
-            r"^[ \t]*(?:#{1,6}[ \t]*)?(references|bibliography|works cited|literature cited)"
-            r"[ \t]*:?[ \t]*$",
-            text,
-            re.IGNORECASE | re.MULTILINE,
-        )
-        return [(match.start(), len(text))] if match else []
+    _REFERENCE_HEADING_RE = re.compile(
+        r"(?:#{1,6} ?)?(references|bibliography|works cited|literature cited):?",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _reference_list(cls, text: str) -> list[tuple[int, int]]:
+        """Mask the reference list, matched per stripped line.
+
+        The heading is matched against an already trimmed line, so the pattern
+        contains no repeated whitespace quantifiers and cannot backtrack on a
+        long run of spaces or tabs in a large document.
+        """
+        offset = 0
+        for line in text.split("\n"):
+            stripped = line.strip()
+            if stripped and cls._REFERENCE_HEADING_RE.fullmatch(stripped):
+                return [(offset, len(text))]
+            offset += len(line) + 1
+        return []
 
     @staticmethod
     def _resource_spans(text: str) -> list[tuple[int, int]]:
@@ -939,6 +959,7 @@ class DiagnosticEngine:
                 )
 
         self._suggestion_budget = MAX_SPELLING_SUGGESTIONS
+        self._rule_counts = {}
         mask = _Mask(text)
         metrics_context: list[str] = []
         for chunk_start, chunk_end in self._chunks(text):
@@ -950,13 +971,14 @@ class DiagnosticEngine:
             findings.extend(self._analyse_chunk(view, protected, mask, wanted, checker))
             if len(findings) > self.max_findings * 2:
                 truncated = True
-                findings = findings[: self.max_findings]
                 break
-
         findings.sort(key=Diagnostic.sort_key)
         if len(findings) > self.max_findings:
             truncated = True
             findings = findings[: self.max_findings]
+        if any(count >= MAX_FINDINGS_PER_RULE for count in self._rule_counts.values()):
+            # A single rule hit its cap, so the report is not exhaustive.
+            truncated = True
 
         counts = {"error": 0, "style": 0}
         by_category: dict[str, int] = {}
@@ -1042,6 +1064,7 @@ class DiagnosticEngine:
     ) -> list[Diagnostic]:
         clean = view.text
         found: list[Diagnostic] = []
+        rule_counts: dict[str, int] = self._rule_counts
 
         def add(
             rule: str,
@@ -1056,12 +1079,15 @@ class DiagnosticEngine:
         ) -> None:
             if category not in wanted:
                 return
+            if rule_counts.get(rule, 0) >= MAX_FINDINGS_PER_RULE:
+                return
             original_start, original_end = view.original_span(clean_start, clean_end)
             original = mask.text[original_start:original_end]
             if not original:
                 return
             kind = kind_override or CATEGORY_INFO[category]["kind"]
             replacements = tuple(r for r in replacements if r != original)
+            rule_counts[rule] = rule_counts.get(rule, 0) + 1
             found.append(
                 Diagnostic(
                     rule=rule,
@@ -1562,31 +1588,25 @@ class DiagnosticEngine:
         def flagged(start: int, end: int) -> bool:
             return _inside(start, protected) or _inside(end - 1, protected)
 
-        for match in re.finditer(
-            r"\b(?:there|here)\s+(is|was|has|does)\s+"
-            r"(?:(?:a|an|the|many|several|some|numerous|few|two|three|four|five|"
-            r"various|multiple|numerous)\s+)*([A-Za-z]{3,}(?:s|ies))\b",
-            clean,
-            re.IGNORECASE,
-        ):
-            noun = match.group(2).lower()
+        for hit in _there_is_plural_spans(clean):
+            noun = hit.noun.lower()
             if noun in SINGULAR_S_WORDS or noun in _ACADEMIC_TERMS:
                 continue
             if noun.endswith(("ss", "us", "is", "ics", "ness", "ysis")):
                 continue
-            if flagged(match.start(1), match.end(1)):
+            if flagged(hit.verb_start, hit.verb_end):
                 continue
-            verb = match.group(1).lower()
+            verb = hit.verb.lower()
             replacement = {"is": "are", "was": "were", "has": "have", "does": "do"}[verb]
-            if clean[match.start(1)].isupper():
+            if clean[hit.verb_start].isupper():
                 replacement = replacement.capitalize()
             add(
                 "agreement.plural-subject",
                 "agreement",
                 f"\"{noun}\" is plural, but the verb \"{verb}\" is singular.",
                 f"Use \"{replacement}\".",
-                match.start(1),
-                match.end(1),
+                hit.verb_start,
+                hit.verb_end,
                 (replacement,),
                 confidence="medium",
             )
@@ -1711,23 +1731,27 @@ class DiagnosticEngine:
 
 
 def _drop_contained(findings: Sequence[Diagnostic]) -> list[Diagnostic]:
-    """Remove a finding that another finding of the same rule fully contains."""
-    kept: list[Diagnostic] = []
+    """Remove a finding that another finding of the same rule fully contains.
+
+    Findings are grouped by rule and ordered by position with the longest first,
+    so a containment check only has to look at the previous kept finding: the
+    comparison stays O(n log n) instead of the quadratic scan that made a
+    document with thousands of repeated words take seconds (found by the
+    pathological-input regression test).
+    """
+    by_rule: dict[str, list[Diagnostic]] = {}
     for finding in findings:
-        container = next(
-            (
-                other
-                for other in findings
-                if other is not finding
-                and other.rule == finding.rule
-                and other.start <= finding.start
-                and other.end >= finding.end
-                and (other.end - other.start) > (finding.end - finding.start)
-            ),
-            None,
-        )
-        if container is None:
+        by_rule.setdefault(finding.rule, []).append(finding)
+    kept: list[Diagnostic] = []
+    for items in by_rule.values():
+        items.sort(key=lambda item: (item.start, -(item.end - item.start)))
+        previous: Diagnostic | None = None
+        for finding in items:
+            if previous is not None and finding.end <= previous.end:
+                continue  # contained in the finding already kept
             kept.append(finding)
+            previous = finding
+    kept.sort(key=Diagnostic.sort_key)
     return kept
 
 
@@ -1856,6 +1880,60 @@ CONJUNCTIVE_ADVERBS = frozenset(
 )
 
 MIN_CLAUSE_WORDS = 3
+
+
+_THERE_IS_RE = re.compile(
+    r"\b(?:there|here)\s+(?P<verb>is|was|has|does)\s+", re.IGNORECASE
+)
+_QUANTIFIER_WORDS = frozenset(
+    """
+    a an the many several some numerous few two three four five various multiple no
+    """.split()
+)
+_NOUN_RE = re.compile(r"[A-Za-z]{3,}(?:s|ies)\b")
+
+
+@dataclass(frozen=True)
+class _ThereIsHit:
+    """One "there is <quantifiers> <plural noun>" observation."""
+
+    verb: str
+    verb_start: int
+    verb_end: int
+    noun: str
+    start: int
+    end: int
+
+
+def _there_is_plural_spans(text: str) -> Iterator[_ThereIsHit]:
+    """Find "there is many studies"-style wording without a nested regex.
+
+    Quantifier words are skipped one at a time in a bounded loop, so a document
+    full of "numerous numerous numerous" cannot cause backtracking (a nested
+    regex with a repeated whitespace group did, as CodeQL reported).
+    """
+    for match in _THERE_IS_RE.finditer(text):
+        position = match.end()
+        for _ in range(3):
+            word_match = re.match(r"[A-Za-z]+", text[position:])
+            if not word_match or word_match.group(0).lower() not in _QUANTIFIER_WORDS:
+                break
+            noun_position = position + word_match.end()
+            space = re.match(r"\s+", text[noun_position:])
+            if not space:
+                break
+            position = noun_position + space.end()
+        noun_match = _NOUN_RE.match(text, position)
+        if not noun_match:
+            continue
+        yield _ThereIsHit(
+            verb=match.group("verb"),
+            verb_start=match.start("verb"),
+            verb_end=match.end("verb"),
+            noun=noun_match.group(0),
+            start=match.start(),
+            end=noun_match.end(),
+        )
 
 
 def _comma_splice(

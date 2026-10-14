@@ -529,6 +529,10 @@ def test_findings_are_capped_for_very_long_documents(engine):
     report = engine.analyse(text)
     assert report["truncated"] is True
     assert len(report["diagnostics"]) <= 600
+    # A single rule cannot swamp the report or the marker layer.
+    spelling = [item for item in report["diagnostics"] if item["rule"] == "spelling.unknown-word"]
+    assert len(spelling) <= 120
+    assert any("first" in note for note in report["notes"])
 
 
 # --------------------------------------------------------- markdown internals
@@ -589,6 +593,30 @@ def test_long_document_is_analysed_quickly(engine):
     assert report["counts"]["total"] >= 0
     assert elapsed < 25, f"analysis took {elapsed:.1f}s"
     check_offsets(text, report)
+
+
+def test_pathological_input_cannot_stall_the_analysis(engine):
+    """ReDoS regression: the mask must not backtrack on adversarial text.
+
+    The three patterns reported by CodeQL (a code fence line of spaces, a
+    "references" heading with many tabs, and "there is" followed by repeated
+    quantifier words) are exercised with input designed to blow up a
+    backtracking engine. Each analysis must finish promptly.
+    """
+    cases = {
+        "spaces after a fence": "```" + " " * 40_000 + "\nprose after\n",
+        "reference heading with tabs": "References" + "\t" * 40_000 + "\n\nBody text.\n",
+        "repeated quantifiers": "There is " + "numerous " * 20_000 + "studies here.",
+        "fence-like lines": ("~~~" + " " * 5_000 + "\n") * 20,
+        "tabs before a heading": "\t" * 20_000 + "References\n",
+    }
+    for name, text in cases.items():
+        started = time.perf_counter()
+        report = engine.analyse(text)
+        elapsed = time.perf_counter() - started
+        assert report["counts"]["total"] >= 0
+        assert elapsed < 5, f"{name} took {elapsed:.2f}s: possible catastrophic backtracking"
+        check_offsets(text, report)
 
 
 @pytest.mark.skipif(not spelling_engine_available(), reason="pyspellchecker is not installed")
