@@ -26,7 +26,15 @@ from document_store import (
     DocumentStore,
     DocumentValidationError,
 )
-from diagnostics import MAX_DOCUMENT_CHARS, DiagnosticEngine, PersonalDictionary
+from diagnostics import (
+    DEFAULT_PROFILE,
+    ENGINE_NAME,
+    ENGINE_VERSION,
+    MAX_DOCUMENT_CHARS,
+    RULESET_VERSION,
+    DiagnosticEngine,
+    PersonalDictionary,
+)
 from editor_service import AcademicEditorService
 
 MAX_TEXT_CHARS = int(os.getenv("MAX_TEXT_CHARS", "500000"))
@@ -321,6 +329,9 @@ class DiagnosticsRequest(BaseModel):
     document_id: Optional[str] = None
     revision: Optional[int] = None
     categories: Optional[list[str]] = None
+    # A profile name is short and fixed, so validating it here is safe: an
+    # invalid one never echoes document text. The engine still resolves aliases.
+    profile: Optional[str] = Field(default=None, max_length=32)
 
 
 class DictionaryRequest(BaseModel):
@@ -356,11 +367,27 @@ def get_diagnostics_engine() -> DiagnosticEngine:
 def workspace_diagnostic_categories():
     return {
         "categories": DiagnosticEngine.categories(),
+        "groups": DiagnosticEngine.groups(),
+        "profiles": DiagnosticEngine.profiles(),
+        "default_profile": DEFAULT_PROFILE,
         "limits": {"max_characters": MAX_DOCUMENT_CHARS},
+        "engine": {
+            "name": ENGINE_NAME,
+            "version": ENGINE_VERSION,
+            "ruleset_version": RULESET_VERSION,
+        },
         "privacy": (
             "Diagnostics run locally with a bundled dictionary and deterministic "
             "rules. No document text leaves this computer and nothing is logged."
         ),
+    }
+
+
+@app.get("/api/workspace/diagnostics/profiles")
+def workspace_diagnostic_profiles():
+    return {
+        "profiles": DiagnosticEngine.profiles(),
+        "default_profile": DEFAULT_PROFILE,
     }
 
 
@@ -370,6 +397,7 @@ def workspace_diagnostics(request: DiagnosticsRequest):
         report = get_diagnostics_engine().analyse(
             request.text,
             categories=request.categories,
+            profile=request.profile,
             document_id=request.document_id,
             revision=request.revision,
         )
