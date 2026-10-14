@@ -174,6 +174,8 @@
       renderPendingNote();
     }
     refreshDerived();
+    // Re-check after the typing pauses; never on every keystroke.
+    if (window.scheduleAnalysis) window.scheduleAnalysis();
   }
 
   function scheduleAutosave() {
@@ -404,6 +406,7 @@
     refreshDerived();
     renderDocumentList();
     loadHistory();
+    if (window.resetDiagnostics) window.resetDiagnostics();
   }
 
   async function openDocument(id) {
@@ -657,6 +660,679 @@
     }
   }
 
+  // ------------------------------------------------------------- diagnostics
+  // Stage 2: local, deterministic diagnostics with inline markers, reviewable
+  // corrections and a categorised sidebar. Everything runs against the local
+  // server; the editor never sends text anywhere else. Markers are positioned by
+  // measuring a hidden mirror of the textarea with the same text metrics, so a
+  // marker always sits exactly over the characters it refers to.
+  const ANALYSIS_DELAY_MS = 700;
+  const MARKER_TRACK_LIMIT = 3;
+  const DICTIONARY_PREFIX = "scholarflow:dictionary";
+  const DISMISS_PREFIX = "scholarflow:dismissed:";
+
+  const CATEGORY_LETTERS = {
+    spelling: "S",
+    agreement: "A",
+    punctuation: "P",
+    capitalization: "C",
+    fragment: "F",
+    run_on: "R",
+    wordiness: "W",
+    repetition: "X",
+    readability: "Y",
+    tone: "T",
+  };
+
+  Object.assign(elements, {
+    markerLayer: byId("marker-layer"),
+    markerMirror: byId("marker-mirror"),
+    suggestionCard: byId("suggestion-card"),
+    suggestionHeading: byId("suggestion-heading"),
+    suggestionBadge: byId("suggestion-badge"),
+    suggestionOriginal: byId("suggestion-original"),
+    suggestionProposal: byId("suggestion-proposal"),
+    suggestionProposalHeading: byId("suggestion-proposal-heading"),
+    suggestionMeta: byId("suggestion-meta"),
+    suggestionExplanation: byId("suggestion-explanation"),
+    suggestionAlternatives: byId("suggestion-alternatives"),
+    suggestionBlocked: byId("suggestion-blocked"),
+    suggestionDictionary: byId("suggestion-dictionary"),
+    suggestionAccept: byId("suggestion-accept"),
+    suggestionDismiss: byId("suggestion-dismiss"),
+    suggestionClose: byId("suggestion-close"),
+    diagnosticsSummary: byId("diagnostics-summary"),
+    diagnosticsList: byId("diagnostics-list"),
+    diagnosticsEmpty: byId("diagnostics-empty"),
+    diagnosticsMetrics: byId("diagnostics-metrics"),
+    diagnosticsPrivacy: byId("diagnostics-privacy"),
+    dictionaryBox: byId("dictionary-box"),
+    dictionaryCount: byId("dictionary-count"),
+    dictionaryWords: byId("dictionary-words"),
+    filterAll: byId("filter-all"),
+    filterError: byId("filter-error"),
+    filterStyle: byId("filter-style"),
+  });
+
+  state.diagnostics = {
+    findings: [],
+    categories: [],
+    counts: { total: 0, error: 0, style: 0 },
+    metrics: null,
+    notes: [],
+    truncated: false,
+    loading: false,
+    text: null,
+    filter: "all",
+    dismissed: [],
+    activeId: null,
+    openId: null,
+    controller: null,
+    timer: null,
+    requests: 0,
+    checks: 0,
+    error: null,
+    dictionary: [],
+  };
+
+  function categoryLetter(category) {
+    return CATEGORY_LETTERS[category] || (category || "?").slice(0, 1).toUpperCase();
+  }
+
+  function dismissedKey(documentId) {
+    return DISMISS_PREFIX + documentId;
+  }
+
+  function readDismissed(documentId) {
+    if (!documentId) return [];
+    try {
+      const raw = window.localStorage.getItem(dismissedKey(documentId));
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string") : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function writeDismissed() {
+    if (!state.document) return;
+    try {
+      window.localStorage.setItem(
+        dismissedKey(state.document.id),
+        JSON.stringify(state.diagnostics.dismissed.slice(-500)),
+      );
+    } catch {
+      /* storage may be unavailable; dismissal simply does not persist */
+    }
+  }
+
+  function visibleFindings() {
+    const filter = state.diagnostics.filter;
+    return state.diagnostics.findings.filter((finding) => {
+      if (state.diagnostics.dismissed.includes(finding.id)) return false;
+      if (filter === "error" && finding.kind !== "error") return false;
+      if (filter === "style" && finding.kind !== "style") return false;
+      return true;
+    });
+  }
+
+  function findingById(id) {
+    return state.diagnostics.findings.find((finding) => finding.id === id) || null;
+  }
+
+  // ------------------------------------------------------------ analysis run
+  function scheduleAnalysis(delay = ANALYSIS_DELAY_MS) {
+    window.clearTimeout(state.diagnostics.timer);
+    if (!state.document) return;
+    state.diagnostics.timer = window.setTimeout(() => analyseNow(), delay);
+  }
+
+  async function analyseNow() {
+    const document_ = state.document;
+    if (!document_) return null;
+    const text = elements.editor.value;
+    if (state.diagnostics.controller) {
+      // A newer request supersedes an older one; the older answer is dropped.
+      state.diagnostics.controller.abort();
+    }
+    const controller = new AbortController();
+    state.diagnostics.controller = controller;
+    state.diagnostics.loading = true;
+    state.diagnostics.requests += 1;
+    renderDiagnosticsPanel();
+    try {
+      const report = await request("/api/workspace/diagnostics", {
+        method: "POST",
+        body: JSON.stringify({ text, document_id: document_.id, revision: document_.revision }),
+        signal: controller.signal,
+      });
+      if (state.diagnostics.controller !== controller) return null;
+      if (elements.editor.value !== text) {
+        // The document changed while the analysis ran: never show stale offsets.
+        scheduleAnalysis(0);
+        return null;
+      }
+      state.diagnostics.findings = Array.isArray(report.diagnostics) ? report.diagnostics : [];
+      state.diagnostics.categories = Array.isArray(report.categories) ? report.categories : [];
+      state.diagnostics.counts = report.counts || { total: 0, error: 0, style: 0 };
+      state.diagnostics.metrics = report.metrics || null;
+      state.diagnostics.notes = Array.isArray(report.notes) ? report.notes : [];
+      state.diagnostics.truncated = Boolean(report.truncated);
+      state.diagnostics.text = text;
+      state.diagnostics.checks += 1;
+      state.diagnostics.error = null;
+      renderMarkers();
+      renderDiagnosticsPanel();
+      return report;
+    } catch (error) {
+      if (error && (error.name === "AbortError" || error.aborted)) return null;
+      state.diagnostics.error = error && error.message ? error.message : "unknown error";
+      renderDiagnosticsPanel();
+      return null;
+    } finally {
+      if (state.diagnostics.controller === controller) {
+        state.diagnostics.loading = false;
+        state.diagnostics.controller = null;
+        renderDiagnosticsPanel();
+      }
+    }
+  }
+
+  function resetDiagnostics({ keepDismissed = true } = {}) {
+    window.clearTimeout(state.diagnostics.timer);
+    if (state.diagnostics.controller) state.diagnostics.controller.abort();
+    state.diagnostics.controller = null;
+    state.diagnostics.findings = [];
+    state.diagnostics.counts = { total: 0, error: 0, style: 0 };
+    state.diagnostics.metrics = null;
+    state.diagnostics.notes = [];
+    state.diagnostics.truncated = false;
+    state.diagnostics.text = null;
+    state.diagnostics.activeId = null;
+    state.diagnostics.openId = null;
+    state.diagnostics.error = null;
+    state.diagnostics.dismissed = keepDismissed && state.document ? readDismissed(state.document.id) : [];
+    window.clearTimeout(state.diagnostics.timer);
+    closeSuggestion("");
+    renderMarkers();
+    renderDiagnosticsPanel();
+  }
+
+  // -------------------------------------------------------------- markers
+  function buildTracks(findings) {
+    const tracks = [];
+    const ordered = [...findings].sort((left, right) => left.start - right.start || left.end - right.end);
+    for (const finding of ordered) {
+      let track = tracks.find((item) => item.length === 0 || item[item.length - 1].end <= finding.start);
+      if (!track) {
+        track = [];
+        tracks.push(track);
+      }
+      track.push(finding);
+    }
+    return tracks.slice(0, MARKER_TRACK_LIMIT);
+  }
+
+  function escapeHtml(value) {
+    return value
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function markerLabel(finding) {
+    const kind = finding.kind === "error" ? "Error" : "Style option";
+    return `${kind}, ${finding.category_label}: ${finding.message}`;
+  }
+
+  function syncMarkerScroll() {
+    const { markerLayer, editor } = elements;
+    markerLayer.style.transform =
+      `translate(${-editor.scrollLeft}px, ${-editor.scrollTop}px)`;
+  }
+
+  function renderMarkers() {
+    const layer = elements.markerLayer;
+    layer.replaceChildren();
+    const findings = visibleFindings();
+    if (!findings.length) {
+      return;
+    }
+    const text = elements.editor.value;
+    const mirror = elements.markerMirror;
+    mirror.style.width = `${elements.editor.clientWidth}px`;
+    const layerRect = layer.getBoundingClientRect();
+    const tracks = buildTracks(findings);
+    tracks.forEach((track, trackIndex) => {
+      let cursor = 0;
+      let html = "";
+      for (const finding of track) {
+        const start = Math.max(cursor, Math.min(finding.start, text.length));
+        const end = Math.max(start, Math.min(finding.end, text.length));
+        html += escapeHtml(text.slice(cursor, start));
+        const body = text.slice(start, end);
+        html += `<span class="marker-span" data-id="${escapeHtml(finding.id)}">${body ? escapeHtml(body) : "&#8203;"}</span>`;
+        cursor = end;
+      }
+      html += escapeHtml(text.slice(cursor));
+      mirror.innerHTML = html;
+      mirror.style.width = `${elements.editor.clientWidth}px`;
+      const mirrorRect = mirror.getBoundingClientRect();
+      let fallbackIndex = 0;
+      for (const span of mirror.querySelectorAll("span.marker-span")) {
+        const finding = findingById(span.dataset.id);
+        if (!finding) continue;
+        let rects = Array.from(span.getClientRects()).filter(
+          (rect) => rect.width > 0 || rect.height > 0,
+        );
+        if (!rects.length) {
+          // A DOM without a layout engine (jsdom in the automated checks) cannot
+          // measure text. The markers are still rendered, ordered and focusable
+          // so their behaviour can be verified, but exact pixel alignment over
+          // the characters needs a real rendering engine. `data-fallback` marks
+          // those markers so nothing pretends they are positioned.
+          rects = [
+            {
+              top: 0,
+              left: 0,
+              width: Math.max(12, finding.original.length * 8),
+              height: 18,
+              __fallback: true,
+            },
+          ];
+        }
+        for (const rect of rects) {
+          const fallback = Boolean(rect.__fallback);
+          if (fallback) fallbackIndex += 1;
+          const marker = document.createElement("button");
+          marker.type = "button";
+          marker.className = `marker kind-${finding.kind} cat-${finding.category}`;
+          if (finding.id === state.diagnostics.activeId) marker.classList.add("is-active");
+          marker.dataset.id = finding.id;
+          if (fallback) {
+            marker.dataset.fallback = "1";
+            marker.style.top = `${8 + (fallbackIndex - 1) * 22}px`;
+            marker.style.left = `${8 + trackIndex * 6}px`;
+          } else {
+            marker.style.top = `${rect.top - mirrorRect.top + trackIndex * 1.5}px`;
+            marker.style.left = `${rect.left - mirrorRect.left}px`;
+          }
+          marker.style.width = `${Math.max(4, rect.width)}px`;
+          marker.style.height = `${Math.max(8, rect.height)}px`;
+          marker.setAttribute("aria-label", markerLabel(finding));
+          marker.title = markerLabel(finding);
+          marker.tabIndex = finding.id === state.diagnostics.activeId ? 0 : -1;
+          if (rect.width >= 10) {
+            const badge = document.createElement("span");
+            badge.className = "marker-badge";
+            badge.setAttribute("aria-hidden", "true");
+            badge.textContent = categoryLetter(finding.category);
+            marker.appendChild(badge);
+          }
+          marker.addEventListener("click", () => openSuggestion(finding.id));
+          layer.appendChild(marker);
+        }
+      }
+    });
+    syncMarkerScroll();
+  }
+
+  function scrollEditorTo(start) {
+    const editor = elements.editor;
+    const before = editor.value.slice(0, start);
+    const line = before.split("\n").length - 1;
+    const lineHeight = parseFloat(window.getComputedStyle(editor).lineHeight) || 27;
+    const target = Math.max(0, line * lineHeight - editor.clientHeight / 3);
+    editor.scrollTop = target;
+    editor.setSelectionRange(start, start + 1);
+    syncMarkerScroll();
+  }
+
+  // -------------------------------------------------------------- sidebar
+  function setFilter(filter) {
+    state.diagnostics.filter = filter;
+    elements.filterAll.setAttribute("aria-pressed", filter === "all" ? "true" : "false");
+    elements.filterError.setAttribute("aria-pressed", filter === "error" ? "true" : "false");
+    elements.filterStyle.setAttribute("aria-pressed", filter === "style" ? "true" : "false");
+    renderMarkers();
+    renderDiagnosticsPanel();
+  }
+
+  function renderDiagnosticsPanel() {
+    const diagnostics = state.diagnostics;
+    const list = elements.diagnosticsList;
+    const summary = elements.diagnosticsSummary;
+    list.replaceChildren();
+    if (!state.document) {
+      summary.textContent = "No document open.";
+      elements.diagnosticsEmpty.hidden = false;
+      elements.diagnosticsEmpty.textContent = "Open or create a document to see diagnostics.";
+      elements.diagnosticsMetrics.textContent = "";
+      return;
+    }
+    const shown = visibleFindings();
+    const dismissed = diagnostics.dismissed.length;
+    const errorCount = diagnostics.findings.filter((item) => item.kind === "error").length;
+    const styleCount = diagnostics.findings.filter((item) => item.kind === "style").length;
+    const parts = [
+      `<span class="count-error">${errorCount} error${errorCount === 1 ? "" : "s"}</span>`,
+      `<span class="count-style">${styleCount} style option${styleCount === 1 ? "" : "s"}</span>`,
+    ];
+    if (dismissed) parts.push(`${dismissed} dismissed`);
+    if (diagnostics.loading) parts.push("checking…");
+    let summaryText = parts.join(" · ");
+    if (diagnostics.text !== null && shown.length !== diagnostics.findings.length - dismissed) {
+      summaryText += ` · showing ${shown.length}`;
+    }
+    summary.innerHTML = summaryText;
+    elements.diagnosticsSummary.setAttribute(
+      "aria-label",
+      `${errorCount} errors and ${styleCount} style options, showing ${shown.length}`,
+    );
+
+    // Group by category, errors first, each group labelled with its kind.
+    const groups = new Map();
+    for (const finding of shown) {
+      if (!groups.has(finding.category)) groups.set(finding.category, []);
+      groups.get(finding.category).push(finding);
+    }
+    const order = diagnostics.categories.map((item) => item.id);
+    const sortedCategories = [...groups.keys()].sort((left, right) => {
+      const leftError = groups.get(left)[0].kind === "error" ? 0 : 1;
+      const rightError = groups.get(right)[0].kind === "error" ? 0 : 1;
+      if (leftError !== rightError) return leftError - rightError;
+      return order.indexOf(left) - order.indexOf(right);
+    });
+    for (const category of sortedCategories) {
+      const items = groups.get(category);
+      const info = diagnostics.categories.find((item) => item.id === category) || {};
+      const section = document.createElement("section");
+      section.className = "diag-group";
+      const heading = document.createElement("h3");
+      heading.className = "diag-group-head";
+      const kind = items[0].kind;
+      heading.innerHTML =
+        `${escapeHtml(items[0].category_label)} ` +
+        `<span class="diag-kind kind-${kind}">${kind === "error" ? "errors" : "style options"}</span> ` +
+        `<span class="diag-text">(${items.length})</span>`;
+      section.appendChild(heading);
+      if (info.hint) {
+        const hint = document.createElement("p");
+        hint.className = "diag-hint";
+        hint.textContent = info.hint;
+        section.appendChild(hint);
+      }
+      for (const finding of items) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `diag-finding kind-${finding.kind}`;
+        button.dataset.id = finding.id;
+        button.setAttribute(
+          "aria-label",
+          `${finding.kind === "error" ? "Error" : "Style option"} in ${finding.category_label}: ${finding.message}. ${finding.explanation}`,
+        );
+        if (finding.id === diagnostics.activeId) button.classList.add("is-active");
+        const letter = document.createElement("span");
+        letter.className = "diag-letter";
+        letter.setAttribute("aria-hidden", "true");
+        letter.textContent = categoryLetter(finding.category);
+        button.appendChild(letter);
+        const label = document.createElement("span");
+        const snippet = finding.original.replace(/\s+/g, " ").slice(0, 60);
+        label.innerHTML = `${escapeHtml(finding.message)} <span class="diag-text">“${escapeHtml(snippet)}”</span>`;
+        button.appendChild(label);
+        button.addEventListener("click", () => openSuggestion(finding.id));
+        section.appendChild(button);
+      }
+      list.appendChild(section);
+    }
+
+    if (shown.length) {
+      elements.diagnosticsEmpty.hidden = true;
+      elements.diagnosticsEmpty.textContent = "";
+    } else {
+      elements.diagnosticsEmpty.hidden = false;
+      if (diagnostics.loading) {
+        elements.diagnosticsEmpty.textContent = "Checking this document…";
+      } else if (diagnostics.error) {
+        elements.diagnosticsEmpty.textContent = `Diagnostics could not run: ${diagnostics.error}. Your text is unchanged.`;
+      } else if (diagnostics.findings.length) {
+        const which = diagnostics.filter === "error" ? "errors" : "style suggestions";
+        elements.diagnosticsEmpty.textContent = `No ${which} here. Switch the filter to see the other findings.`;
+      } else {
+        elements.diagnosticsEmpty.textContent =
+          "No findings. Your text passed every local rule for the categories checked.";
+      }
+    }
+    if (diagnostics.notes.length && !diagnostics.error) {
+      elements.diagnosticsEmpty.hidden = false;
+      elements.diagnosticsEmpty.textContent = diagnostics.notes.join(" ");
+    }
+    renderMetrics();
+
+    if (diagnostics.dictionary.length !== elements.dictionaryWords.childElementCount) {
+      renderDictionary();
+    } else {
+      elements.dictionaryCount.textContent = String(diagnostics.dictionary.length);
+    }
+  }
+
+  function renderMetrics() {
+    const metrics = state.diagnostics.metrics;
+    if (!metrics) {
+      elements.diagnosticsMetrics.textContent = "";
+      return;
+    }
+    const ease = metrics.flesch_reading_ease;
+    const band = ease >= 60 ? "plain" : ease >= 30 ? "fairly difficult" : "difficult";
+    elements.diagnosticsMetrics.textContent =
+      `${metrics.words.toLocaleString()} words · ${metrics.sentences.toLocaleString()} sentences · ` +
+      `readability ${ease} (${band}) · longest paragraph ${metrics.longest_paragraph_words} words` +
+      (state.diagnostics.truncated ? " · showing the first findings only" : "");
+  }
+
+  function renderDictionary() {
+    const words = state.diagnostics.dictionary;
+    elements.dictionaryCount.textContent = String(words.length);
+    elements.dictionaryWords.replaceChildren();
+    for (const word of words) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = `${word} ✕`;
+      button.setAttribute("aria-label", `Remove ${word} from the personal dictionary`);
+      button.addEventListener("click", async () => {
+        await loadDictionary(`/api/workspace/dictionary/${encodeURIComponent(word)}`, { method: "DELETE" });
+        scheduleAnalysis(0);
+      });
+      elements.dictionaryWords.appendChild(button);
+    }
+  }
+
+  async function loadDictionary(path = "/api/workspace/dictionary", options = {}) {
+    try {
+      const payload = await request(path, options);
+      state.diagnostics.dictionary = Array.isArray(payload.words) ? payload.words : [];
+      renderDictionary();
+      return payload;
+    } catch (error) {
+      showStatus(`The personal dictionary could not be updated: ${error.message}`);
+      return null;
+    }
+  }
+
+  // ----------------------------------------------------------- suggestion card
+  function openSuggestion(id) {
+    const finding = findingById(id);
+    if (!finding) return;
+    state.diagnostics.openId = id;
+    state.diagnostics.activeId = id;
+    renderSuggestion();
+    renderMarkers();
+    renderDiagnosticsPanel();
+    elements.suggestionCard.hidden = false;
+    elements.suggestionCard.scrollIntoView({ block: "nearest" });
+    elements.suggestionAccept.focus();
+  }
+
+  function renderSuggestion() {
+    const finding = findingById(state.diagnostics.openId);
+    if (!finding) return false;
+    const kind = finding.kind === "error" ? "Error" : "Style option";
+    elements.suggestionHeading.textContent = finding.category_label;
+    elements.suggestionBadge.textContent = kind;
+    elements.suggestionBadge.className = `badge kind-${finding.kind}`;
+    elements.suggestionOriginal.textContent = finding.original;
+    const hasReplacement = Boolean(finding.replacement);
+    elements.suggestionProposal.textContent = hasReplacement
+      ? finding.replacement
+      : "(no automatic replacement — review the explanation)";
+    elements.suggestionProposalHeading.textContent = hasReplacement ? "Proposed correction" : "Correction";
+    elements.suggestionMeta.textContent =
+      `${kind} · ${finding.confidence} confidence · rule ${finding.rule} · characters ${finding.start}-${finding.end}`;
+    elements.suggestionExplanation.textContent = finding.explanation;
+    elements.suggestionAccept.disabled = !hasReplacement;
+    elements.suggestionAccept.setAttribute("aria-disabled", hasReplacement ? "false" : "true");
+    elements.suggestionBlocked.hidden = true;
+    elements.suggestionBlocked.textContent = "";
+    elements.suggestionDictionary.hidden = finding.category !== "spelling";
+    elements.suggestionDictionary.dataset.word = finding.original;
+    elements.suggestionAlternatives.replaceChildren();
+    for (const alternative of finding.replacements) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = alternative;
+      button.setAttribute("aria-label", `Use “${alternative}” instead`);
+      button.addEventListener("click", () => acceptSuggestion(alternative));
+      elements.suggestionAlternatives.appendChild(button);
+    }
+    return true;
+  }
+
+  function closeSuggestion(message = "") {
+    state.diagnostics.openId = null;
+    elements.suggestionCard.hidden = true;
+    if (message) showStatus(message);
+  }
+
+  function blockSuggestion(message) {
+    elements.suggestionBlocked.hidden = false;
+    elements.suggestionBlocked.textContent = message;
+  }
+
+  function acceptSuggestion(alternative = null) {
+    const finding = findingById(state.diagnostics.openId);
+    if (!finding) return;
+    const replacement = alternative !== null ? alternative : finding.replacement;
+    if (replacement === null || replacement === undefined) {
+      blockSuggestion("This finding has no automatic correction. Accept is disabled on purpose: applying one would change your meaning.");
+      return;
+    }
+    const text = elements.editor.value;
+    const current = text.slice(finding.start, finding.end);
+    if (state.diagnostics.text !== text || current !== finding.original) {
+      // The text moved since the analysis: refuse rather than corrupt it.
+      blockSuggestion(
+        "This suggestion no longer matches the text at those characters, so it was not applied. " +
+          "Re-checking the document instead.",
+      );
+      scheduleAnalysis(0);
+      return;
+    }
+    applyEdit(finding.start, finding.end, replacement);
+    closeSuggestion(`${finding.category_label} applied; the document is marked as unsaved.`);
+    scheduleAnalysis(0);
+  }
+
+  function dismissSuggestion() {
+    const finding = findingById(state.diagnostics.openId);
+    if (!finding) return;
+    if (!state.diagnostics.dismissed.includes(finding.id)) {
+      state.diagnostics.dismissed.push(finding.id);
+      writeDismissed();
+    }
+    closeSuggestion("Dismissed. The text was not changed.");
+    renderMarkers();
+    renderDiagnosticsPanel();
+  }
+
+  async function addFindingWordToDictionary() {
+    const finding = findingById(state.diagnostics.openId);
+    if (!finding || finding.category !== "spelling") return;
+    const word = elements.suggestionDictionary.dataset.word || finding.original;
+    const payload = await loadDictionary("/api/workspace/dictionary", {
+      method: "POST",
+      body: JSON.stringify({ word }),
+    });
+    if (payload) {
+      closeSuggestion(`“${word}” was added to your personal dictionary.`);
+      scheduleAnalysis(0);
+    }
+  }
+
+  function restoreDismissed() {
+    state.diagnostics.dismissed = [];
+    writeDismissed();
+    renderMarkers();
+    renderDiagnosticsPanel();
+    showStatus("Dismissed findings are shown again.");
+  }
+
+  function focusFinding(delta) {
+    const findings = visibleFindings();
+    if (!findings.length) {
+      showStatus("There are no findings to move between in this view.");
+      return;
+    }
+    const index = findings.findIndex((finding) => finding.id === state.diagnostics.activeId);
+    const nextIndex = index < 0 ? (delta > 0 ? 0 : findings.length - 1) : (index + delta + findings.length) % findings.length;
+    const finding = findings[nextIndex];
+    state.diagnostics.activeId = finding.id;
+    scrollEditorTo(finding.start);
+    renderMarkers();
+    renderDiagnosticsPanel();
+    const marker = elements.markerLayer.querySelector(`.marker[data-id="${finding.id}"]`);
+    if (marker) marker.focus({ preventScroll: true });
+  }
+
+  function moveMarkerFocus(event) {
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      event.preventDefault();
+      focusFinding(1);
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      event.preventDefault();
+      focusFinding(-1);
+    } else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      const target = event.target.closest ? event.target.closest(".marker") : null;
+      openSuggestion(target ? target.dataset.id : state.diagnostics.activeId);
+    } else if (event.key === "Escape") {
+      closeSuggestion();
+    }
+  }
+
+  elements.markerLayer.addEventListener("keydown", moveMarkerFocus);
+  elements.filterAll.addEventListener("click", () => setFilter("all"));
+  elements.filterError.addEventListener("click", () => setFilter("error"));
+  elements.filterStyle.addEventListener("click", () => setFilter("style"));
+  elements.editor.addEventListener("scroll", syncMarkerScroll);
+  window.addEventListener("resize", () => renderMarkers());
+  byId("finding-next").addEventListener("click", () => focusFinding(1));
+  byId("finding-previous").addEventListener("click", () => focusFinding(-1));
+  byId("finding-recheck").addEventListener("click", () => analyseNow());
+  byId("suggestion-accept").addEventListener("click", () => acceptSuggestion());
+  byId("suggestion-dismiss").addEventListener("click", dismissSuggestion);
+  byId("suggestion-dictionary").addEventListener("click", addFindingWordToDictionary);
+  byId("suggestion-close").addEventListener("click", () => closeSuggestion());
+  elements.diagnosticsList.addEventListener("click", (event) => {
+    const button = event.target.closest && event.target.closest(".diag-finding");
+    if (button) openSuggestion(button.dataset.id);
+  });
+  elements.dictionaryBox.addEventListener("toggle", () => {
+    if (elements.dictionaryBox.open) loadDictionary();
+  });
+  loadDictionary();
+
   // --------------------------------------------------------------- events
   elements.editor.addEventListener("input", markDirty);
   elements.editor.addEventListener("keyup", refreshDerived);
@@ -750,8 +1426,19 @@
       refine();
       return;
     }
-    if (event.key === "Escape" && state.pending) {
-      dismissReview();
+    if (event.key === "Escape") {
+      if (state.pending) {
+        dismissReview();
+        return;
+      }
+      if (state.diagnostics && state.diagnostics.openId) {
+        closeSuggestion();
+        return;
+      }
+    }
+    if (event.altKey && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+      event.preventDefault();
+      focusFinding(event.key === "ArrowDown" ? 1 : -1);
       return;
     }
     if (!inEditor || !modifier) return;
@@ -780,6 +1467,11 @@
     event.returnValue = "";
   });
 
+  // The diagnostics module is defined after the helpers it uses; publish the two
+  // hooks it needs so edits and document changes trigger a re-check.
+  window.scheduleAnalysis = scheduleAnalysis;
+  window.resetDiagnostics = resetDiagnostics;
+
   // Small read-only hook used by the repository's GUI checks and by debugging.
   window.scholarflowWorkspace = {
     getState: () => ({
@@ -795,9 +1487,46 @@
           }
         : null,
       documents: state.list.length,
+      diagnostics: {
+        count: state.diagnostics.findings.length,
+        error: state.diagnostics.counts.error || 0,
+        style: state.diagnostics.counts.style || 0,
+        shown: visibleFindings().length,
+        filter: state.diagnostics.filter,
+        dismissed: state.diagnostics.dismissed.length,
+        activeId: state.diagnostics.activeId,
+        openId: state.diagnostics.openId,
+        loading: state.diagnostics.loading,
+        requests: state.diagnostics.requests,
+        checks: state.diagnostics.checks,
+        analysedText: state.diagnostics.text,
+        error: state.diagnostics.error,
+        categories: state.diagnostics.categories.map((item) => item.id),
+        findings: state.diagnostics.findings.map((item) => ({
+          id: item.id,
+          category: item.category,
+          kind: item.kind,
+          start: item.start,
+          end: item.end,
+          original: item.original,
+          replacement: item.replacement,
+          replacements: item.replacements,
+          message: item.message,
+          confidence: item.confidence,
+        })),
+      },
+      dictionary: state.diagnostics.dictionary,
     }),
     refine,
     save: saveDocument,
+    analyse: analyseNow,
+    acceptSuggestion,
+    dismissSuggestion,
+    openSuggestion,
+    setFilter,
+    focusFinding,
+    restoreDismissed,
+    dictionary: { list: loadDictionary, add: addFindingWordToDictionary },
   };
 
   // ----------------------------------------------------------------- boot

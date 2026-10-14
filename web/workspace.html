@@ -23,6 +23,7 @@
   </header>
 
   <div class="banner-stack" aria-live="polite">
+
     <div class="banner is-error" id="error-banner" hidden>
       <span id="error-message"></span>
       <button type="button" class="banner-action" id="retry-button">Retry</button>
@@ -82,8 +83,14 @@
         <span>Document title</span>
         <input id="doc-title" maxlength="300" placeholder="Untitled document">
       </label>
-      <textarea id="editor" spellcheck="true" aria-label="Document text"
-        placeholder="Write or paste your paper here. Markdown headings (# , ## , ### ), lists and quotes are supported."></textarea>
+      <div class="editor-shell">
+        <div class="marker-layer" id="marker-layer" role="group"
+             aria-label="Diagnostic markers: use the arrow keys to move between findings and Enter to review one"></div>
+        <div class="marker-mirror" id="marker-mirror" aria-hidden="true"></div>
+        <textarea id="editor" spellcheck="false" aria-label="Document text"
+          aria-describedby="diagnostics-summary"
+          placeholder="Write or paste your paper here. Markdown headings (# , ## , ### ), lists and quotes are supported."></textarea>
+      </div>
 
       <section class="review-card" id="review-card" hidden aria-label="Suggestion review">
         <header>
@@ -109,6 +116,35 @@
         </div>
       </section>
 
+      <section class="review-card diagnostic-card" id="suggestion-card" hidden
+               aria-label="Diagnostic suggestion" role="dialog">
+        <header>
+          <h3 id="suggestion-heading">Suggestion</h3>
+          <span class="badge" id="suggestion-badge"></span>
+        </header>
+        <div class="review-grid">
+          <div>
+            <h4>Your text</h4>
+            <blockquote id="suggestion-original"></blockquote>
+          </div>
+          <div>
+            <h4 id="suggestion-proposal-heading">Proposed correction</h4>
+            <blockquote id="suggestion-proposal"></blockquote>
+          </div>
+        </div>
+        <p class="review-meta" id="suggestion-meta"></p>
+        <p class="review-note" id="suggestion-explanation"></p>
+        <div class="alternatives" id="suggestion-alternatives" role="group"
+             aria-label="Alternative corrections"></div>
+        <p class="review-note is-warning" id="suggestion-blocked" hidden></p>
+        <div class="review-actions">
+          <button type="button" id="suggestion-accept" class="primary">Accept</button>
+          <button type="button" id="suggestion-dismiss">Dismiss</button>
+          <button type="button" id="suggestion-dictionary" hidden>Add to dictionary</button>
+          <button type="button" id="suggestion-close">Close</button>
+        </div>
+      </section>
+
       <footer class="statusbar">
         <span id="word-count">0 words</span>
         <span id="char-count">0 characters</span>
@@ -119,7 +155,30 @@
       </footer>
     </section>
 
-    <aside class="panel inspector" aria-label="Document outline and statistics">
+    <aside class="panel inspector" aria-label="Diagnostics, outline and history">
+      <h2 id="diagnostics-title">Diagnostics</h2>
+      <p class="diagnostics-summary" id="diagnostics-summary" role="status" aria-live="polite">
+        No document open.
+      </p>
+      <div class="filter-row" role="group" aria-label="Filter findings">
+        <button type="button" id="filter-all" aria-pressed="true">All</button>
+        <button type="button" id="filter-error" aria-pressed="false">Errors only</button>
+        <button type="button" id="filter-style" aria-pressed="false">Style options only</button>
+      </div>
+      <div class="finding-nav" role="group" aria-label="Move between findings">
+        <button type="button" id="finding-previous" title="Previous finding (Alt+ArrowUp)">Previous</button>
+        <button type="button" id="finding-next" title="Next finding (Alt+ArrowDown)">Next</button>
+        <button type="button" id="finding-recheck" title="Re-check now">Re-check</button>
+      </div>
+      <div class="diagnostics-list" id="diagnostics-list" aria-label="Findings by category"></div>
+      <p class="hint" id="diagnostics-empty">Open a document to see diagnostics.</p>
+      <p class="hint" id="diagnostics-metrics"></p>
+      <p class="hint" id="diagnostics-privacy">Local checks only: the rules and the dictionary run on this computer, and no text is sent anywhere.</p>
+      <details class="dictionary-box" id="dictionary-box">
+        <summary>Personal dictionary (<span id="dictionary-count">0</span>)</summary>
+        <p class="hint">Words here are never flagged. Add a word from a spelling suggestion, or remove one below.</p>
+        <div class="dictionary-words" id="dictionary-words"></div>
+      </details>
       <h2>Outline</h2>
       <div class="outline" id="outline"></div>
       <h2>History</h2>
@@ -129,7 +188,7 @@
   </main>
 
   <footer class="page-footer">
-    <p><strong>Local by default.</strong> Documents are stored on this computer. Refining uses the deterministic local editor; no text is sent to an external provider.</p>
+    <p><strong>Local by default.</strong> Documents are stored on this computer. Diagnostics and refining use the deterministic local engine and a bundled dictionary; no text is sent to an external provider, and no AI provider is required.</p>
   </footer>
 </body>
 </html>

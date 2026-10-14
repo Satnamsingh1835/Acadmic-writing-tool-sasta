@@ -165,17 +165,196 @@ kbd {
 .editor-column { display: grid; gap: 12px; }
 .title-field input { font-size: 1.05rem; font-weight: 650; }
 
+.editor-shell {
+  /* One set of text metrics for the textarea, the marker mirror and the
+     marker layer, so a marker always sits exactly over its characters. */
+  --editor-font: 16px/1.7 Georgia, "Times New Roman", serif;
+  --editor-padding-y: 28px;
+  --editor-padding-x: 34px;
+  position: relative;
+  display: block;
+}
+
 #editor {
+  position: relative;
+  z-index: 2;
   width: 100%;
   min-height: 62vh;
   resize: vertical;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--paper);
+  background: transparent;
   color: var(--ink);
-  padding: 28px 34px;
-  font: 16px/1.7 Georgia, "Times New Roman", serif;
+  padding: var(--editor-padding-y) var(--editor-padding-x);
+  font: var(--editor-font);
   box-shadow: 0 10px 30px rgba(30, 50, 70, 0.06);
+  overflow: auto;
+}
+
+.editor-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius);
+  background: var(--paper);
+  z-index: 0;
+}
+
+.marker-mirror {
+  position: absolute;
+  top: 0;
+  left: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 1;
+  padding: var(--editor-padding-y) var(--editor-padding-x);
+  font: var(--editor-font);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  tab-size: 4;
+}
+
+.marker-layer {
+  position: absolute;
+  top: var(--editor-padding-y);
+  left: var(--editor-padding-x);
+  right: var(--editor-padding-x);
+  bottom: var(--editor-padding-y);
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 3;
+}
+
+.marker {
+  position: absolute;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  pointer-events: auto;
+  border-radius: 2px;
+  /* Category is carried by the underline style and the badge letter, never by
+     colour alone. */
+  border-bottom: 2px solid transparent;
+}
+
+.marker:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.marker .marker-badge {
+  position: absolute;
+  top: -0.62em;
+  left: -1px;
+  font: 700 9px/1 system-ui, sans-serif;
+  color: #fff;
+  background: var(--ink);
+  border-radius: 2px;
+  padding: 1px 2px;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
+
+/* Errors: solid, wavy, double or dotted underlines in a strong colour. */
+.marker.kind-error.cat-spelling { border-bottom-color: #b3261e; border-bottom-style: wavy; }
+.marker.kind-error.cat-agreement { border-bottom-color: #8e24aa; border-bottom-style: double; }
+.marker.kind-error.cat-punctuation { border-bottom-color: #0b6e4f; border-bottom-style: solid; }
+.marker.kind-error.cat-capitalization { border-bottom-color: #0b4f9e; border-bottom-style: dashed; }
+.marker.kind-error.cat-fragment { border-bottom-color: #a15c00; border-bottom-style: dotted; }
+.marker.kind-error.cat-run_on { border-bottom-color: #a15c00; border-bottom-style: double; }
+
+/* Style options: lower-contrast and a distinctly different stroke pattern so
+   they never read as errors. */
+.marker.kind-style { border-bottom-width: 1px; opacity: 0.85; }
+.marker.kind-style.cat-wordiness { border-bottom-color: #4b6b8a; border-bottom-style: dashed; }
+.marker.kind-style.cat-repetition { border-bottom-color: #4b6b8a; border-bottom-style: dotted; }
+.marker.kind-style.cat-readability { border-bottom-color: #6b7a86; border-bottom-style: dotted; }
+.marker.kind-style.cat-tone { border-bottom-color: #7a5c3a; border-bottom-style: dashed; }
+.marker.kind-style .marker-badge { background: var(--muted); }
+
+.marker.is-active { background: var(--accent-soft); }
+.marker.is-active .marker-badge { background: var(--accent); }
+
+.diagnostic-card { border-left: 4px solid var(--accent); }
+.diagnostic-card .badge.kind-error { background: var(--danger-soft); color: var(--danger); }
+.diagnostic-card .badge.kind-style { background: var(--info-soft); color: var(--accent); }
+.review-note.is-warning { color: var(--warning); background: var(--warning-soft); padding: 8px 10px; border-radius: 8px; }
+
+.alternatives { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; }
+.alternatives button {
+  font: inherit;
+  font-size: 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--paper);
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.diagnostics-summary { font-size: 0.86rem; margin: 6px 0 8px; }
+.diagnostics-summary .count-error { color: var(--danger); font-weight: 650; }
+.diagnostics-summary .count-style { color: var(--accent); font-weight: 650; }
+.filter-row, .finding-nav { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.filter-row button, .finding-nav button {
+  font: inherit;
+  font-size: 0.8rem;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  border-radius: 999px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.filter-row button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+
+.diagnostics-list { display: grid; gap: 6px; max-height: 46vh; overflow: auto; }
+.diag-group { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; background: var(--paper); }
+.diag-group-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin: 0 0 6px; font-size: 0.88rem; }
+.diag-group-head .diag-kind { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.diag-kind.kind-error { color: var(--danger); }
+.diag-kind.kind-style { color: var(--accent); }
+.diag-group .diag-hint { font-size: 0.74rem; color: var(--muted); margin: 0 0 6px; }
+
+.diag-finding {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: 0.84rem;
+  border: 0;
+  border-left: 3px solid transparent;
+  background: none;
+  padding: 4px 6px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.diag-finding:hover, .diag-finding:focus-visible { background: var(--accent-soft); }
+.diag-finding.is-active { background: var(--accent-soft); border-left-color: var(--accent); }
+.diag-finding .diag-letter {
+  display: inline-block;
+  min-width: 16px;
+  text-align: center;
+  font: 700 10px/1.4 system-ui, sans-serif;
+  color: #fff;
+  background: var(--ink);
+  border-radius: 3px;
+  margin-right: 6px;
+}
+.diag-finding.kind-style .diag-letter { background: var(--muted); }
+.diag-finding .diag-text { color: var(--muted); }
+
+.dictionary-box { margin: 10px 0 0; font-size: 0.8rem; }
+.dictionary-box summary { cursor: pointer; }
+.dictionary-words { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.dictionary-words button {
+  font: inherit;
+  font-size: 0.76rem;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  border-radius: 999px;
+  padding: 2px 8px;
+  cursor: pointer;
 }
 
 .review-card {
