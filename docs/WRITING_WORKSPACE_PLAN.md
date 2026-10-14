@@ -62,13 +62,16 @@ recovery, revision history and restore, outline, statistics, status/error
 surfaces, reviewable refine of a selection or paragraph using the existing
 endpoint. Plus the fix for the reported Refine/Ctrl+Enter defect.
 
-**Stage 2 — diagnostics.** Compute findings server-side with offsets
-(`start`, `end`, `category`, `severity`, `message`, `replacements`), render them
-as an overlay layer under the text, and expose:
-`POST /api/workspace/diagnostics {document_id, text}`. Categories are grouped as
-*error* (spelling, agreement, punctuation, capitalization, fragments, run-ons)
-and *recommendation* (wordiness, structure, tone, repetition, readability) so a
-stylistic preference is never presented as an error. Local spelling lands here.
+**Stage 2 — diagnostics (implemented).** Findings are computed server-side with
+exact offsets and returned by `POST /api/workspace/diagnostics`; the editor
+renders them as inline markers over the text, grouped in a categorised sidebar
+with error/style filters, a suggestion card with Accept/Dismiss, a stale-range
+guard and a personal dictionary. See `docs/STAGE2_DIAGNOSTICS_PLAN.md` for the
+rules, the offset contract and the limitations. Categories are split into
+*error* (spelling, agreement, punctuation, capitalisation, fragments, run-ons)
+and *style* (wordiness, repetition, readability, tone) so a stylistic preference
+is never presented as an error; the one convention-based agreement rule
+("data is") is deliberately reported as style, not as an error.
 
 **Stage 3 — inline suggestions.** Clicking a marker opens a pop-up anchored to
 the range with the original text, proposed correction, category, explanation,
@@ -95,3 +98,22 @@ keep the GUI harness in CI.
   runs it from pytest and skips only when Node or jsdom is unavailable.
 - The packaged application keeps its headless smoke gate; the Windows window
   itself still needs the researcher's PC.
+- Stage 2 adds unit tests per rule, API tests for the endpoints and their
+  privacy guarantees, and DOM-level checks for markers, the sidebar, filters,
+  navigation, Accept/Dismiss/stale handling, the dictionary and the failure
+  surfaces.
+
+## 6. Known limitations after Stage 2
+
+- The bundled dictionary is US-English; British spellings are accepted through
+  the variant rules in `diagnostics.py`, and field terms go in the personal
+  dictionary. Words in other scripts (for example Devanagari) are not checked,
+  because the dictionary is English.
+- Fragment, run-on and agreement rules are heuristic and are reported at
+  `medium` confidence; they never rewrite anything on their own.
+- Repetition rules can be noisy in text that deliberately repeats a passage;
+  findings are capped at 600 per document.
+- Marker alignment over the characters is measured in the browser. jsdom has no
+  layout engine, so the automated DOM checks verify marker identity, labels,
+  ordering and behaviour, but not pixel alignment; that needs WebView2 on
+  Windows or a real browser.
