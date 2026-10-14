@@ -16,6 +16,7 @@ from pathlib import Path
 STARTUP_TIMEOUT_SECONDS = 25.0
 HEALTH_PATH = "/health"
 SMOKE_FLAG = "--smoke-test"
+SMOKE_REPORT_FLAG = "--smoke-report"
 
 
 def app_resource_dir() -> Path:
@@ -70,8 +71,13 @@ def _show_error(message: str) -> None:
     try:
         import ctypes
         ctypes.windll.user32.MessageBoxW(0, message, "ScholarFlow could not start", 0x10)
+        return
     except Exception:
+        pass
+    try:
         print(message, file=sys.stderr)
+    except (AttributeError, OSError, ValueError):
+        pass
 
 
 def _start_server():
@@ -117,6 +123,58 @@ def _prepare_resource_root() -> Path:
     if not (root / "web" / "index.html").is_file():
         raise RuntimeError("ScholarFlow web assets are missing from the application package.")
     return root
+
+
+def ensure_standard_streams() -> None:
+    """Make stdout/stderr usable in a PyInstaller windowed build.
+
+    A ``console=False`` executable has no console attached: ``sys.stdout``
+    and ``sys.stderr`` are ``None`` and any ``print()`` raises
+    ``AttributeError``. Attach to the parent console when one exists (so a
+    terminal launch shows output) and fall back to a sink otherwise, so
+    logging and diagnostics can never crash the application.
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    if os.name == "nt":
+        try:
+            import ctypes
+            if ctypes.windll.kernel32.AttachConsole(-1):  # ATTACH_PARENT_PROCESS
+                if sys.stdout is None:
+                    sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace")
+                if sys.stderr is None:
+                    sys.stderr = open("CONOUT$", "w", encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    try:
+        if sys.stdout is None:
+            sys.stdout = open(os.devnull, "w", encoding="utf-8")
+        if sys.stderr is None:
+            sys.stderr = open(os.devnull, "w", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def smoke_report_path(explicit: str | None = None) -> Path:
+    """Report file for smoke runs so results survive a windowed build."""
+    if explicit:
+        return Path(explicit).expanduser()
+    from research_library.store import default_data_dir
+    return default_data_dir() / "logs" / "smoke-test.log"
+
+
+def _write_line(line: str, report) -> None:
+    """Write a smoke line to the report file and, when possible, the console."""
+    if report is not None:
+        try:
+            report.write(line + "\n")
+            report.flush()
+        except OSError:
+            pass
+    try:
+        print(line, flush=True)
+    except (AttributeError, OSError, ValueError):
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -329,14 +387,29 @@ def _smoke_persistence_check() -> tuple[str, bool, str]:
         return ("library database persisted to disk", False, type(exc).__name__)
 
 
-def smoke_main() -> int:
+def smoke_main(argv: list[str] | None = None) -> int:
     """Headless verification used by CI and by ``--smoke-test`` runs."""
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    ensure_standard_streams()
+    explicit_report = None
+    if SMOKE_REPORT_FLAG in arguments:
+        index = arguments.index(SMOKE_REPORT_FLAG)
+        if index + 1 < len(arguments):
+            explicit_report = arguments[index + 1]
     isolated = not os.getenv("SCHOLARFLOW_DATA_DIR")
     if isolated:
         # Set before any research_library/api import reads the data dir so
         # the smoke run can never write to the user's real library.
         os.environ["SCHOLARFLOW_DATA_DIR"] = tempfile.mkdtemp(prefix="scholarflow-smoke-")
     server = thread = listener = None
+    report = None
+    report_path = None
+    try:
+        report_path = smoke_report_path(explicit_report)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report = report_path.open("w", encoding="utf-8")
+    except OSError:
+        report = None
     try:
         log_path = _configure_log()
         root = _prepare_resource_root()
@@ -348,25 +421,31 @@ def smoke_main() -> int:
         failed = 0
         for name, passed, detail in checks:
             line = ("SMOKE PASS " if passed else "SMOKE FAIL ") + name + ((" :: " + detail) if detail else "")
-            print(line, flush=True)
+            _write_line(line, report)
             logging.info(line) if passed else logging.error(line)
             failed += 0 if passed else 1
-        print("Smoke data directory (isolated): " + os.environ["SCHOLARFLOW_DATA_DIR"] if isolated else "Smoke data directory: " + os.environ["SCHOLARFLOW_DATA_DIR"], flush=True)
-        print("Diagnostic log: " + str(log_path), flush=True)
-        print("SMOKE RESULT: " + ("PASS" if failed == 0 else "FAIL (" + str(failed) + " check(s) failed)"), flush=True)
+        _write_line("Smoke data directory" + (" (isolated)" if isolated else "") + ": " + os.environ["SCHOLARFLOW_DATA_DIR"], report)
+        _write_line("Diagnostic log: " + str(log_path), report)
+        if report_path is not None:
+            _write_line("Smoke report: " + str(report_path), report)
+        _write_line("SMOKE RESULT: " + ("PASS" if failed == 0 else "FAIL (" + str(failed) + " check(s) failed)"), report)
         return 0 if failed == 0 else 1
     except Exception as exc:
         logging.exception("ScholarFlow smoke test failed")
-        print("SMOKE FAIL startup :: " + type(exc).__name__ + ": " + str(exc), flush=True)
+        _write_line("SMOKE FAIL startup :: " + type(exc).__name__ + ": " + str(exc), report)
+        _write_line("SMOKE RESULT: FAIL (startup)", report)
         return 1
     finally:
+        if report is not None:
+            report.close()
         _stop_server(server, thread, listener)
 
 
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
+    ensure_standard_streams()
     if SMOKE_FLAG in arguments:
-        return smoke_main()
+        return smoke_main(arguments)
     log_path = None
     server = None
     thread = None

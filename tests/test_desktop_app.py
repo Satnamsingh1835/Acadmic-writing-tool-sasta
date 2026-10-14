@@ -1,4 +1,5 @@
 import sys
+from pathlib import Path
 
 import desktop_app
 from desktop_app import allocate_local_listener, app_resource_dir, health_url
@@ -58,3 +59,31 @@ def test_smoke_main_defaults_to_an_isolated_temp_data_dir(tmp_path, monkeypatch)
     monkeypatch.delenv("SCHOLARFLOW_DATA_DIR", raising=False)
     monkeypatch.setitem(sys.modules, "webview", None)
     assert desktop_app.main([desktop_app.SMOKE_FLAG]) == 0
+
+
+def test_smoke_main_survives_a_windowed_build_with_no_stdout(tmp_path, monkeypatch):
+    """Regression: a PyInstaller console=False build has sys.stdout = None.
+
+    Printing then raises AttributeError, which previously turned a passing
+    smoke run into a failed CI step. The report file must still be written
+    and the exit code must still reflect real check results.
+    """
+    monkeypatch.setenv("SCHOLARFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setitem(sys.modules, "webview", None)
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "stderr", None)
+    report = tmp_path / "logs" / "smoke-test.log"
+    exit_code = desktop_app.main(["--smoke-test", "--smoke-report", str(report)])
+    assert exit_code == 0
+    assert sys.stdout is not None, "streams must be restored so logging cannot crash"
+    assert sys.stderr is not None
+    text = report.read_text(encoding="utf-8")
+    assert "SMOKE RESULT: PASS" in text
+    assert "SMOKE FAIL" not in text
+    assert "library add reference" in text
+
+
+def test_smoke_report_path_defaults_inside_the_data_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("SCHOLARFLOW_DATA_DIR", str(tmp_path))
+    assert desktop_app.smoke_report_path() == tmp_path / "logs" / "smoke-test.log"
+    assert desktop_app.smoke_report_path("/elsewhere/report.log") == Path("/elsewhere/report.log")
