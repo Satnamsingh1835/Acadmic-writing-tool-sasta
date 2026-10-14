@@ -48,9 +48,17 @@ def split_paragraphs(text: str) -> List[str]:
     return [p.strip() for p in re.split(r"\n\s*\n+", text) if p.strip()]
 
 
+# No real abbreviation is longer than this bound, and it stops the walk below
+# from rescanning a long run of dots or word characters once per candidate
+# sentence end (quadratic). A page of dot leaders pasted out of a table of
+# contents is enough to trigger that.
+_MAX_ABBREVIATION = 32
+
+
 def _is_abbreviation(text: str, end: int) -> bool:
     start = end
-    while start > 0 and (text[start - 1].isalnum() or text[start - 1] in ".'"):
+    limit = max(0, end - _MAX_ABBREVIATION)
+    while start > limit and (text[start - 1].isalnum() or text[start - 1] in ".'"):
         start -= 1
     token = text[start:end].lower()
     if token in _ABBREVIATIONS:

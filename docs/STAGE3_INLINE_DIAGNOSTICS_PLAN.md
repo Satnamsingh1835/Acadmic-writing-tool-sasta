@@ -182,12 +182,14 @@ in `localStorage`; neither is uploaded anywhere.
 ## 8. Test commands and results
 
 ```
-python -m pytest -q                                   # 282 passed
-python -m tools.repository_check                      # 166 files, 0 failures
+python -m pytest -q                                   # 304 passed
+python -m tools.repository_check                      # 172 files, 0 failures
 python -m flake8 . --count --select=E9,F63,F7,F82      # clean
 node tests/gui/workspace_dom_check.mjs http://127.0.0.1:8800
                                                       # GUI RESULT: PASS (130/130), twice
-python desktop_app.py --smoke-test --smoke-report <f>  # 58 PASS / 0 FAIL
+python desktop_app.py --smoke-test --smoke-report <f>  # 59 PASS / 0 FAIL
+python -m tools.diagnostics_timing                     # 43 shapes, 0 flagged
+python -m tools.diagnostics_timing --pastes            # the table below
 ```
 
 Measured analysis time on this machine (single analysis, warm dictionary):
@@ -202,10 +204,25 @@ Measured analysis time on this machine (single analysis, warm dictionary):
 | Adversarial: 5,000 citations | 69,999 | 253 ms | 15 |
 | Plan document | 11,216 | 44 ms | 113 |
 
-Two performance defects were found and fixed by these measurements: the mask
-lookup walked every masked range for every character (160 ms → 51 ms on an
-11k document, 1.7 s → 475 ms on 112k), and the protected-span lookup walked
-every citation for every word (1.6 s → 253 ms on a citation-dense document).
+Performance defects found and fixed by these measurements. Four of them were
+only visible on a *paste*, which is how a person notices the editor freezing,
+and none of them can be seen in ordinary prose:
+
+| Defect | Before | After |
+|---|---|---|
+| The mask lookup walked every masked range for every character | 160 ms on 11k / 1.7 s on 112k | 51 ms / 475 ms |
+| The protected-span lookup walked every citation for every word | 1.6 s citation-dense | 253 ms |
+| The email pattern consumed a whole unbroken token at every offset | 3.5 s on 50,000 characters | 71 ms |
+| The abbreviation walk rescanned a run of dots once per full stop | **214 s** on 40,000 dots | 489 ms |
+| The whitespace-run pattern retried the run at every offset | 8.3 s on 40,000 spaces | 61 ms |
+| The comma-splice rule rebuilt both sides of every comma | 24.1 s on 40,000 commas | 71 ms |
+| The Markdown link patterns rescan open brackets | 703 ms on 40,000 brackets | 125 ms |
+
+`tools/diagnostics_timing.py` sweeps 43 paste shapes at two sizes and prints a
+ratio, so a scan that is quadratic (ratio ≈ 4) stands out from one that is
+linear (ratio ≈ 2). It reports `0 flagged` now; the test suite keeps loose
+ceilings that catch an order-of-magnitude regression without failing on a slow
+shared runner.
 
 ## 9. Known false positives and honest limitations
 

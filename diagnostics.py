@@ -818,15 +818,49 @@ class _Mask:
             r"\bwww\.[^\s)\]]+",
             r"\bdoi:\s*\S+",
             r"\b10\.\d{4,9}/[-._;()/:A-Za-z0-9]+",
-            r"[\w.+-]+@[\w-]+\.[\w.-]+",
-            r"\]\(([^)\s]+)\)",  # Markdown link target
-            r"\[[^\]]*\]:\s*\S+",  # link reference definition
+            r"\]\(([^)\s]{1,2048})\)",  # Markdown link target
+            r"\[[^\]]{0,999}\]:\s*\S+",  # link reference definition
         )
         ranges: list[tuple[int, int]] = []
         for pattern in patterns:
             for match in re.finditer(pattern, text):
                 ranges.append((match.start(), match.end()))
+        ranges.extend(_email_spans(text))
         return ranges
+
+
+# An email local part is limited to 64 characters, so the search for one is
+# bounded. The obvious pattern (an unbounded local part, then "@") is quadratic
+# on a long unbroken token: the engine consumes the whole run of word characters
+# at every starting position before failing on the missing "@". A pasted
+# identifier, a data dump or a base64 blob is exactly that shape, and it cost
+# seconds before this was rewritten.
+_EMAIL_RE = re.compile(r"[\w.+-]{1,64}@[\w-]+\.[\w.-]+")
+_EMAIL_LOCAL_CHARS = frozenset("._+-")
+
+
+def _email_spans(text: str) -> list[tuple[int, int]]:
+    """Email addresses, found by examining the neighbourhood of each '@'."""
+    spans: list[tuple[int, int]] = []
+    for at in re.finditer("@", text):
+        window_start = max(0, at.start() - 64)
+        window = text[window_start: at.start() + 128]
+        match = _EMAIL_RE.search(window)
+        if match is None:
+            continue
+        # The match has to contain the "@" that started this search, and it must
+        # start at a real token boundary rather than mid-way through a longer
+        # local part that the window cut off.
+        offset = at.start() - window_start
+        if not (match.start() <= offset <= match.end()):
+            continue
+        start = window_start + match.start()
+        if start > 0:
+            previous = text[start - 1]
+            if previous.isalnum() or previous in _EMAIL_LOCAL_CHARS:
+                continue
+        spans.append((start, window_start + match.end()))
+    return spans
 
 
 def _merge_ranges(ranges: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -1661,21 +1695,28 @@ class DiagnosticEngine:
         def inside_protected(start: int, end: int) -> bool:
             return _covers(start, end, protected)
 
-        for match in re.finditer(r"[ \t]+([,.;:!?])", clean):
-            punctuation = match.group(1)
-            if inside_protected(match.start(), match.end()):
+        # The whitespace run is not part of the pattern on purpose: an
+        # unbounded "[ \t]+" made the engine retry the whole run at every
+        # offset, which is quadratic on a paste of spaces. Look ahead for the
+        # mark instead and walk back over the run once.
+        for match in re.finditer(r"[ \t](?=[,.;:!?])", clean):
+            punctuation = clean[match.end()]
+            start = match.start()
+            while start > 0 and clean[start - 1] in " \t":
+                start -= 1
+            if inside_protected(start, match.end() + 1):
                 continue
-            if punctuation == "." and match.start() > 0 and clean[match.start() - 1].isdigit():
+            if punctuation == "." and start > 0 and clean[start - 1].isdigit():
                 continue
-            if clean[match.end() - 1] == "." and match.end() < len(clean) and clean[match.end()].isdigit():
+            if punctuation == "." and match.end() + 1 < len(clean) and clean[match.end() + 1].isdigit():
                 continue  # decimal written with a space must not be "fixed" blindly
             add(
                 "punctuation.space-before-mark",
                 "punctuation",
                 f"Extra space before \"{punctuation}\".",
                 "Remove the space so the mark sits directly after the word.",
-                match.start(),
-                match.end(),
+                start,
+                match.end() + 1,
                 (punctuation,),
             )
 
@@ -2434,8 +2475,12 @@ def _inside(position: int, spans: Sequence[tuple[int, int]]) -> bool:
 
 
 def _looks_like_abbreviation(clean: str, position: int) -> bool:
+    # The token is only interesting up to five characters, so the walk stops
+    # there as well: unbounded, it rescanned a long run for every full stop in
+    # it, which is quadratic on pasted dot leaders or initials.
     start = position
-    while start > 0 and (clean[start - 1].isalnum() or clean[start - 1] in "."):
+    limit = max(0, position - 6)
+    while start > limit and (clean[start - 1].isalnum() or clean[start - 1] == "."):
         start -= 1
     token = clean[start:position]
     return len(token) <= 5 and token.endswith(".") and token[:-1].isalpha()
@@ -2616,36 +2661,48 @@ def _comma_splice(
     however, argues…") is not a splice. This keeps the rule at medium confidence
     and avoids reporting ordinary academic punctuation as an error.
     """
-    commas = [match.start() for match in re.finditer(",", sentence)]
-    if not commas:
+    matches = list(_WORD_RE.finditer(sentence))
+    if not matches:
         return None
-    for position in commas:
+    starts = [match.start() for match in matches]
+    ends = [match.end() for match in matches]
+    words = [match.group(0).lower() for match in matches]
+    total = len(words)
+
+    # prefix[i] / suffix[i]: does a finite verb appear before / after word i?
+    # Built once, so the per-comma test is a lookup instead of a scan.
+    prefix = [False] * (total + 1)
+    suffix = [False] * (total + 1)
+    for index, word in enumerate(words):
+        prefix[index + 1] = prefix[index] or _is_finite_verb(word)
+    for index in range(total - 1, -1, -1):
+        suffix[index] = suffix[index + 1] or _is_finite_verb(words[index])
+
+    for match in re.finditer(",", sentence):
+        position = match.start()
         if _inside(position, protected):
             continue  # a comma inside a citation (Gupta, 2000; Rao, 2011) is not a splice
-        left = sentence[:position]
-        right = sentence[position + 1:]
-        left_words = [word.lower() for word in _WORD_RE.findall(left)]
-        right_words = [word.lower() for word in _WORD_RE.findall(right)]
-        if len(left_words) < MIN_CLAUSE_WORDS or len(right_words) < MIN_CLAUSE_WORDS:
+        # Words are runs without a comma in them, so every word that starts
+        # before the comma also ends before it: the split is a bisect.
+        split = bisect.bisect_left(starts, position)
+        if split < MIN_CLAUSE_WORDS or total - split < MIN_CLAUSE_WORDS:
             continue
-        if right_words[0] in COORDINATORS or right_words[0] in RELATIVE_PRONOUNS:
+        first_right = words[split]
+        if first_right in COORDINATORS or first_right in RELATIVE_PRONOUNS:
             continue
-        if right_words[0] in SUBORDINATORS or left_words[-1] in SUBORDINATORS:
+        if first_right in SUBORDINATORS or words[split - 1] in SUBORDINATORS:
             continue
-        if left_words[0] in SUBORDINATORS and left_words[0] not in RELATIVE_PRONOUNS:
+        if words[0] in SUBORDINATORS and words[0] not in RELATIVE_PRONOUNS:
             # "While X, Y" is one sentence with a fronted subordinate clause.
             continue
-        if right_words[0] in CONJUNCTIVE_ADVERBS:
+        if first_right in CONJUNCTIVE_ADVERBS:
             # "…, however, argues …" is a parenthetical interruption, not a
             # clause boundary: a second comma closes the adverb. Only treat it
             # as a splice when the adverb runs straight into a new clause
             # ("…, moreover it reshaped …").
-            after_adverb = right[right.find(right_words[0]) + len(right_words[0]):]
-            if after_adverb.lstrip().startswith(","):
+            if sentence[ends[split]:].lstrip().startswith(","):
                 continue
-        left_finite = any(_is_finite_verb(word) for word in left_words)
-        right_finite = any(_is_finite_verb(word) for word in right_words)
-        if left_finite and right_finite:
+        if prefix[split] and suffix[split]:
             return position
     return None
 

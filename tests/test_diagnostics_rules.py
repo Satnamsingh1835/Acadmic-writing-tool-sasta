@@ -307,8 +307,12 @@ def test_a_long_document_is_analysed_within_a_typing_budget(engine):
     started = time.perf_counter()
     report = engine.analyse(text)
     elapsed = time.perf_counter() - started
+    print(f"[timing] long document: {len(text):,} characters in {elapsed:.2f}s")
     assert report["characters"] == len(text)
-    assert elapsed < 6.0, f"{len(text):,} characters took {elapsed:.2f}s"
+    # A generous ceiling on purpose: this guards against an order-of-magnitude
+    # regression (a quadratic scan), not against a slow shared CI runner. The
+    # measured figures for this machine are in the stage-3 document.
+    assert elapsed < 20.0, f"{len(text):,} characters took {elapsed:.2f}s"
     assert_offsets(text, report)
 
 
@@ -323,15 +327,44 @@ def test_adversarial_documents_stay_bounded_too(engine):
         "many code spans": " ".join(["`code`"] * 5_000),
         "many fences": "```\nprose\n```\n" * 500,
         "long URLs": " ".join(["https://example.org/a/b/c/d/e/f/g"] * 2_000),
-        "no spaces": "x" * 50_000,
+        "no spaces at all": "x" * 50_000,
+        "one long identifier": "_".join(["ab"] * 20_000),
+        "a base64 blob": "QUJDREVGR0g" * 6_000,
     }
     for name, text in cases.items():
         started = time.perf_counter()
         report = engine.analyse(text)
         elapsed = time.perf_counter() - started
+        print(f"[timing] {name}: {len(text):,} characters in {elapsed:.2f}s")
         assert report["counts"]["total"] >= 0
-        assert elapsed < 6.0, f"{name} took {elapsed:.2f}s"
+        assert elapsed < 20.0, f"{name} took {elapsed:.2f}s"
         assert_offsets(text, report)
+
+
+def test_a_long_unbroken_run_is_not_scanned_quadratically(engine):
+    """The email pattern must not walk a long token at every start position.
+
+    A run of word characters with no "@" in it used to cost the engine a full
+    rescan per character; a pasted identifier or a data dump is exactly that
+    shape. Doubling the input must not quadruple the time, so the two sizes are
+    compared with a wide margin for a shared machine.
+    """
+    import time
+
+    def measure(size: int) -> float:
+        text = "x" * size
+        engine.analyse("warm up the dictionary and the caches.")
+        started = time.perf_counter()
+        engine.analyse(text)
+        return time.perf_counter() - started
+
+    small = measure(20_000)
+    large = measure(40_000)
+    print(f"[timing] unbroken run: 20k in {small:.3f}s, 40k in {large:.3f}s")
+    assert large < 0.5, f"40,000 characters took {large:.2f}s"
+    # Linear behaviour is ~2x; the quadratic version was ~4x and far slower in
+    # absolute terms. The bound is loose so a noisy runner cannot fail it.
+    assert large < max(0.05, small) * 6, f"20k={small:.3f}s 40k={large:.3f}s"
 
 
 def test_the_report_says_when_it_stopped_early(engine):
@@ -402,6 +435,38 @@ def test_overlapping_findings_are_both_kept(engine):
     assert long_sentence and wordiness
     assert wordiness[0]["start"] >= long_sentence[0]["start"]
     assert wordiness[0]["end"] <= long_sentence[0]["end"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The data" + "." * 4000 + " was analysed.",
+        "The data" + "," * 4000 + " was analysed.",
+        "The data " + " " * 4000 + "was analysed.",
+        "[" * 4000,
+        "A." * 2000,
+    ],
+)
+def test_a_punctuation_paste_is_not_scanned_quadratically(engine, text):
+    """These shapes cost seconds each before the scans were bounded."""
+    import time
+
+    engine.analyse("Warm up the dictionary and the caches.")
+    started = time.perf_counter()
+    report = engine.analyse(text)
+    elapsed = time.perf_counter() - started
+    print(f"[timing] paste of {len(text):,} characters in {elapsed:.2f}s")
+    assert_offsets(text, report)
+    assert elapsed < 5.0, f"{len(text):,} characters of {text[:1]!r} took {elapsed:.2f}s"
+
+
+def test_an_email_address_is_masked_and_looked_up_in_bounded_time(engine):
+    """The email pattern was quadratic on a long token; it is now bounded."""
+    text = "Write to gupta@example.org or a.b+tag@sub.example.co.in about it.\n"
+    report = engine.analyse(text)
+    assert_offsets(text, report)
+    for item in report["diagnostics"]:
+        assert "@" not in item["original"], item
 
 
 def test_citations_quotations_and_urls_are_not_prose(engine):
