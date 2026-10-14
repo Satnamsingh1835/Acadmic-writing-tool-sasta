@@ -33,12 +33,14 @@ import json
 import os
 import re
 import tempfile
+import threading
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
 from academic_analyser import AcademicAnalyzer
+from diagnostic_lexicon import PROTECTED_WORDS, is_protected_word, looks_like_acronym
 from humanize import HumanizeAI
 from text_parser import _WORD_RE
 
@@ -47,7 +49,20 @@ from text_parser import _WORD_RE
 MAX_DOCUMENT_CHARS = 2_000_000
 MAX_FINDINGS = 600
 MAX_FINDINGS_PER_RULE = 120
-MAX_SPELLING_SUGGESTIONS = 60
+# Words the spelling rules may report per document. The expensive step is
+# finding one-edit neighbours, so the scan stops as soon as both spelling rules
+# have reached their per-rule cap -- see ``_spelling_rules``. There is
+# deliberately no *suggestion* budget any more: it used to decide whether a word
+# looked like a typo, so a long document silently reclassified its later typos as
+# merely "unknown". Classification must never depend on how much work has
+# already been done.
+SPELLING_RULES: tuple[str, ...] = ("spelling.misspelling", "spelling.unknown-word")
+# Once this many unknown words in a row produced no finding, the spelling scan
+# stops for the document: the rules are capped (so nothing more can be reported
+# except through the personal dictionary), and this is what keeps a page of
+# nonsense from costing seconds. Words after the stop are simply not examined,
+# and the report says so through ``truncated``.
+MAX_BARREN_SPELLING_WORDS = 40
 CHUNK_TARGET_CHARS = 4_000
 LONG_SENTENCE_WORDS = 35
 LONG_PARAGRAPH_WORDS = 220
@@ -111,6 +126,195 @@ CATEGORY_INFO: dict[str, dict[str, str]] = {
 CATEGORY_ORDER: tuple[str, ...] = tuple(CATEGORY_INFO)
 STYLE_CATEGORIES = frozenset(c for c in CATEGORY_ORDER if CATEGORY_INFO[c]["kind"] == "style")
 
+# The coarse taxonomy a reader thinks in (the categories named in the request),
+# reported next to the precise rule category so the sidebar can group widely
+# while a rule keeps its own narrow identity.
+DIAGNOSTIC_GROUPS: dict[str, dict[str, str]] = {
+    "spelling": {"label": "Spelling"},
+    "grammar": {"label": "Grammar"},
+    "punctuation": {"label": "Punctuation"},
+    "sentence_structure": {"label": "Sentence structure"},
+    "clarity": {"label": "Clarity"},
+    "concision": {"label": "Concision"},
+    "academic_style": {"label": "Academic style"},
+    "repetition": {"label": "Repetition"},
+}
+
+CATEGORY_GROUP: dict[str, str] = {
+    "spelling": "spelling",
+    "agreement": "grammar",
+    "capitalization": "grammar",
+    "punctuation": "punctuation",
+    "fragment": "sentence_structure",
+    "run_on": "sentence_structure",
+    "readability": "clarity",
+    "wordiness": "concision",
+    "repetition": "repetition",
+    "tone": "academic_style",
+}
+
+GROUP_ORDER: tuple[str, ...] = tuple(DIAGNOSTIC_GROUPS)
+
+# ------------------------------------------------------------------ versions
+
+ENGINE_NAME = "ScholarFlow local diagnostics"
+ENGINE_VERSION = "3.0.0"
+RULESET_VERSION = "2026.10"
+DEFAULT_RULE_VERSION = "1.0"
+
+# Rules introduced or materially changed after the first ruleset: a client can
+# tell "this rule is new" from "this rule changed what it reports".
+RULE_VERSIONS: dict[str, str] = {
+    "spelling.misspelling": "2.0",
+    "spelling.unknown-word": "2.0",
+    "grammar.mass-noun-plural": "2.0",
+    "grammar.article-an": "2.0",
+    "grammar.redundant-preposition": "2.0",
+    "punctuation.missing-apostrophe": "2.0",
+    "clarity.ambiguous-this": "2.0",
+}
+
+
+def rule_version(rule: str) -> str:
+    return RULE_VERSIONS.get(rule, DEFAULT_RULE_VERSION)
+
+
+# ------------------------------------------------------------------ profiles
+
+
+@dataclass(frozen=True)
+class DiagnosticProfile:
+    """A named emphasis for the *style* rules.
+
+    Spelling and the reliable grammar families run in every profile; a profile
+    only chooses which optional style categories are reported and how strict
+    the length thresholds are. It never changes document text.
+    """
+
+    id: str
+    label: str
+    summary: str
+    style_categories: frozenset[str]
+    thresholds: dict[str, int]
+    category_weights: dict[str, int]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "label": self.label,
+            "summary": self.summary,
+            "style_categories": sorted(self.style_categories),
+            "thresholds": dict(self.thresholds),
+            "always_on_categories": sorted(ERROR_CATEGORIES),
+        }
+
+
+# Rules a researcher expects to run no matter which emphasis they picked.
+ERROR_CATEGORIES = frozenset(c for c in CATEGORY_ORDER if c not in STYLE_CATEGORIES)
+
+PROFILES: dict[str, DiagnosticProfile] = {
+    "academic_standard": DiagnosticProfile(
+        id="academic_standard",
+        label="Academic Standard",
+        summary="Balanced: every error rule plus optional clarity, concision and register suggestions.",
+        style_categories=frozenset(STYLE_CATEGORIES),
+        thresholds={
+            "long_sentence_words": LONG_SENTENCE_WORDS,
+            "long_paragraph_words": LONG_PARAGRAPH_WORDS,
+        },
+        category_weights={
+            "spelling": 0,
+            "agreement": 1,
+            "punctuation": 2,
+            "capitalization": 3,
+            "fragment": 4,
+            "run_on": 5,
+            "readability": 6,
+            "wordiness": 7,
+            "tone": 8,
+            "repetition": 9,
+        },
+    ),
+    "formal_academic": DiagnosticProfile(
+        id="formal_academic",
+        label="Formal Academic Writing",
+        summary="Register first: keeps the formality and readability checks, holds back concision suggestions, and tolerates longer formal sentences.",
+        style_categories=frozenset({"tone", "readability", "repetition"}),
+        thresholds={
+            # Formal prose is allowed to run longer before it is questioned.
+            "long_sentence_words": 45,
+            "long_paragraph_words": LONG_PARAGRAPH_WORDS,
+        },
+        category_weights={
+            "spelling": 0,
+            "agreement": 1,
+            "tone": 2,
+            "punctuation": 3,
+            "capitalization": 4,
+            "fragment": 5,
+            "run_on": 6,
+            "readability": 7,
+            "repetition": 8,
+            "wordiness": 9,
+        },
+    ),
+    "concise_academic": DiagnosticProfile(
+        id="concise_academic",
+        label="Concise Academic Writing",
+        summary="Brevity first: questions length, wordiness and repetition earlier, and leaves register comments aside.",
+        style_categories=frozenset({"readability", "wordiness", "repetition"}),
+        thresholds={
+            "long_sentence_words": 28,
+            "long_paragraph_words": 170,
+        },
+        category_weights={
+            "spelling": 0,
+            "agreement": 1,
+            "wordiness": 2,
+            "readability": 3,
+            "repetition": 4,
+            "punctuation": 5,
+            "capitalization": 6,
+            "fragment": 7,
+            "run_on": 8,
+            "tone": 9,
+        },
+    ),
+}
+
+DEFAULT_PROFILE = "academic_standard"
+
+# A profile name that reaches the API from a bookmark, a saved preference or an
+# older build is normalised here rather than rejected.
+PROFILE_ALIASES: dict[str, str] = {
+    "standard": "academic_standard",
+    "academic": "academic_standard",
+    "medium": "academic_standard",
+    "default": "academic_standard",
+    "formal": "formal_academic",
+    "conservative": "formal_academic",
+    "light": "formal_academic",
+    "minimal": "formal_academic",
+    "concise": "concise_academic",
+    "polish": "concise_academic",
+    "heavy": "concise_academic",
+}
+
+
+def normalize_profile(profile: str | None) -> DiagnosticProfile:
+    """Resolve a profile name, accepting the rewrite profiles' names too."""
+    if profile is None:
+        return PROFILES[DEFAULT_PROFILE]
+    if not isinstance(profile, str):
+        raise ValueError("Profile must be a string.")
+    key = profile.strip().lower().replace("-", "_").replace(" ", "_")
+    key = PROFILE_ALIASES.get(key, key)
+    resolved = PROFILES.get(key)
+    if resolved is None:
+        choices = ", ".join(p.id for p in PROFILES.values())
+        raise ValueError(f"Unknown profile '{profile}'. Choose from: {choices}.")
+    return resolved
+
 
 # ----------------------------------------------------------------- data model
 
@@ -135,16 +339,33 @@ class Diagnostic:
         digest = hashlib.sha1(self.original.encode("utf-8")).hexdigest()[:8]
         return f"{self.rule}@{self.start}-{self.end}#{digest}"
 
-    def to_dict(self) -> dict[str, object]:
+    @property
+    def group(self) -> str:
+        return CATEGORY_GROUP.get(self.category, self.category)
+
+    def priority(self, profile: "DiagnosticProfile | None" = None) -> int:
+        """Lower sorts first in the sidebar; profiles reprioritise, never rewrite."""
+        if profile is None:
+            profile = PROFILES[DEFAULT_PROFILE]
+        return profile.category_weights.get(self.category, len(CATEGORY_ORDER))
+
+    def to_dict(self, profile: "DiagnosticProfile | None" = None) -> dict[str, object]:
         info = CATEGORY_INFO.get(self.category, {})
+        group = self.group
         return {
             "id": self.id,
             "rule": self.rule,
+            "rule_version": rule_version(self.rule),
+            "engine_version": ENGINE_VERSION,
+            "ruleset_version": RULESET_VERSION,
             "category": self.category,
             "category_label": info.get("label", self.category),
+            "group": group,
+            "group_label": DIAGNOSTIC_GROUPS.get(group, {}).get("label", group),
             "kind": self.kind,
             "severity": self.kind,
             "confidence": self.confidence,
+            "priority": self.priority(profile),
             "message": self.message,
             "explanation": self.explanation,
             "start": self.start,
@@ -706,6 +927,35 @@ def _trim_span(text: str, start: int, end: int) -> tuple[int, int] | None:
     return (start, end) if end > start else None
 
 
+# --------------------------------------------------- proper-noun protection
+
+
+def _widely_capitalized(text: str) -> set[str]:
+    """Lower-cased words that the author capitalises away from a sentence start.
+
+    A word a writer consistently capitalises in the middle of a sentence is
+    being used as a proper noun (a surname, a village, a programme). Treating it
+    as a misspelling would be the worst kind of false positive, so those words
+    are protected for the whole document. The check is deliberately generous:
+    it can only ever *remove* a finding, never add one.
+    """
+    protected: set[str] = set()
+    for match in _WORD_RE.finditer(text):
+        token = match.group(0)
+        if not token[:1].isupper() or token.isupper():
+            continue
+        before = text[: match.start()]
+        # Sentence start: the token follows ". ", "! ", "? ", a newline, or the
+        # beginning of the document. Those positions carry no signal, because
+        # every sentence starts with a capital.
+        stripped = before.rstrip()
+        if not stripped or stripped[-1] in ".!?\n:;\u0000" or stripped.endswith("\u2014"):
+            continue
+        if len(token) > 2:
+            protected.add(unicodedata.normalize("NFC", token.lower()))
+    return protected
+
+
 # --------------------------------------------------------- protected content
 
 _CITATION_RE = re.compile(r"\([^()]{0,160}\)")
@@ -859,7 +1109,11 @@ def _spelling_candidates(word: str, checker, limit: int = 3) -> tuple[str, ...]:
     personal dictionary instead.
     """
     neighbours = _edit_one_variants(word)
-    known = [candidate for candidate in neighbours if not checker.unknown([candidate])]
+    # One batched lookup instead of one call per neighbour: measurably faster
+    # (~0.3 ms instead of ~0.5 ms per unknown word) and the engine leans on it
+    # for every unknown word, not only the first few.
+    unknown = checker.unknown(neighbours)
+    known = [candidate for candidate in neighbours if candidate not in unknown]
     if not known:
         return ()
 
@@ -868,6 +1122,21 @@ def _spelling_candidates(word: str, checker, limit: int = 3) -> tuple[str, ...]:
         return (-frequency, candidate)
 
     return tuple(sorted(known, key=rank)[:limit])
+
+
+# ------------------------------------------------------------------- run state
+
+
+@dataclass
+class _Run:
+    """State that belongs to one analysis, never to the engine as a whole."""
+
+    profile: DiagnosticProfile = PROFILES[DEFAULT_PROFILE]
+    rule_counts: dict[str, int] = field(default_factory=dict)
+    spelling_stopped_early: bool = False
+
+    def threshold(self, name: str, fallback: int) -> int:
+        return int(self.profile.thresholds.get(name, fallback))
 
 
 # ----------------------------------------------------------------- the engine
@@ -888,9 +1157,13 @@ class DiagnosticEngine:
         }
         self.max_findings = max_findings
         self.chunk_target = chunk_target
-        # Suggestions are capped per analysis so a document with hundreds of
-        # unknown words cannot turn one request into a long computation.
-        self._suggestion_budget = MAX_SPELLING_SUGGESTIONS
+        # Per-analysis state (suggestion budget, per-rule counts, profile
+        # thresholds) lives on a run object so a profile cannot leak into the
+        # next call. ``_lock`` serialises concurrent analyses of one engine, so
+        # two requests can never interleave their run state.
+        self._lock = threading.Lock()
+        self._run = _Run()
+        self._proper_nouns: set[str] = set()
 
     # -- helpers ----------------------------------------------------------
 
@@ -902,8 +1175,22 @@ class DiagnosticEngine:
                 "label": info["label"],
                 "kind": info["kind"],
                 "hint": info["hint"],
+                "group": CATEGORY_GROUP.get(name, name),
+                "group_label": DIAGNOSTIC_GROUPS.get(
+                    CATEGORY_GROUP.get(name, name), {}
+                ).get("label", name),
             }
             for name, info in CATEGORY_INFO.items()
+        ]
+
+    @staticmethod
+    def profiles() -> list[dict[str, object]]:
+        return [profile.to_dict() for profile in PROFILES.values()]
+
+    @staticmethod
+    def groups() -> list[dict[str, str]]:
+        return [
+            {"id": name, "label": info["label"]} for name, info in DIAGNOSTIC_GROUPS.items()
         ]
 
     def _chunks(self, text: str) -> Iterator[tuple[int, int]]:
@@ -928,6 +1215,7 @@ class DiagnosticEngine:
         text: str,
         *,
         categories: Sequence[str] | None = None,
+        profile: str | None = None,
         document_id: str | None = None,
         revision: int | None = None,
     ) -> dict[str, object]:
@@ -937,8 +1225,14 @@ class DiagnosticEngine:
             raise ValueError(
                 f"The document is longer than the {MAX_DOCUMENT_CHARS:,} character analysis limit."
             )
-        wanted = set(categories) if categories else set(CATEGORY_ORDER)
-        unknown = wanted - set(CATEGORY_ORDER)
+        active = normalize_profile(profile)
+        # The profile decides which optional style categories are reported; the
+        # error categories always run. An explicit ``categories`` argument
+        # narrows that set further (used by clients that hide a pane).
+        wanted = set(ERROR_CATEGORIES) | set(active.style_categories)
+        if categories:
+            wanted &= set(categories)
+        unknown = set(categories or ()) - set(CATEGORY_ORDER)
         if unknown:
             raise ValueError("Unknown diagnostic categories: " + ", ".join(sorted(unknown)))
 
@@ -958,35 +1252,50 @@ class DiagnosticEngine:
                     "Install the 'pyspellchecker' package to enable it."
                 )
 
-        self._suggestion_budget = MAX_SPELLING_SUGGESTIONS
-        self._rule_counts = {}
-        mask = _Mask(text)
-        metrics_context: list[str] = []
-        for chunk_start, chunk_end in self._chunks(text):
-            view = _build_view(text, mask, chunk_start, chunk_end)
-            if not view.text.strip():
-                continue
-            protected = _protected_spans(view.text)
-            metrics_context.append(view.text)
-            findings.extend(self._analyse_chunk(view, protected, mask, wanted, checker))
-            if len(findings) > self.max_findings * 2:
+        with self._lock:
+            self._run = _Run(profile=active)
+            self._proper_nouns = _widely_capitalized(text)
+            mask = _Mask(text)
+            metrics_context: list[str] = []
+            for chunk_start, chunk_end in self._chunks(text):
+                view = _build_view(text, mask, chunk_start, chunk_end)
+                if not view.text.strip():
+                    continue
+                protected = _protected_spans(view.text)
+                metrics_context.append(view.text)
+                findings.extend(self._analyse_chunk(view, protected, mask, wanted, checker))
+                if len(findings) > self.max_findings * 2:
+                    truncated = True
+                    break
+            findings.sort(key=Diagnostic.sort_key)
+            if len(findings) > self.max_findings:
                 truncated = True
-                break
-        findings.sort(key=Diagnostic.sort_key)
-        if len(findings) > self.max_findings:
-            truncated = True
-            findings = findings[: self.max_findings]
-        if any(count >= MAX_FINDINGS_PER_RULE for count in self._rule_counts.values()):
+                findings = findings[: self.max_findings]
+            rule_counts = dict(self._run.rule_counts)
+            stopped_early = self._run.spelling_stopped_early
+        if any(count >= MAX_FINDINGS_PER_RULE for count in rule_counts.values()):
             # A single rule hit its cap, so the report is not exhaustive.
             truncated = True
+        if stopped_early:
+            # Spelling stopped examining the document part-way through.
+            truncated = True
+            notes.append(
+                "Spelling stopped examining this document after "
+                f"{MAX_BARREN_SPELLING_WORDS} more unknown words produced no finding, "
+                "so the results are not a complete list for the whole text."
+            )
 
         counts = {"error": 0, "style": 0}
         by_category: dict[str, int] = {}
+        by_group: dict[str, int] = {}
         for finding in findings:
             counts[finding.kind] = counts.get(finding.kind, 0) + 1
             by_category[finding.category] = by_category.get(finding.category, 0) + 1
+            by_group[finding.group] = by_group.get(finding.group, 0) + 1
         for category in CATEGORY_ORDER:
             by_category.setdefault(category, 0)
+        for group in GROUP_ORDER:
+            by_group.setdefault(group, 0)
 
         if not findings and text.strip():
             notes.append(
@@ -1003,25 +1312,31 @@ class DiagnosticEngine:
             "revision": revision,
             "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
             "characters": len(text),
-            "diagnostics": [finding.to_dict() for finding in findings],
+            "diagnostics": [finding.to_dict(active) for finding in findings],
             "counts": {
                 "total": len(findings),
                 "error": counts.get("error", 0),
                 "style": counts.get("style", 0),
                 "by_category": by_category,
+                "by_group": by_group,
             },
             "metrics": self._metrics("\n\n".join(metrics_context)),
             "categories": self.categories(),
             "notes": notes,
             "truncated": truncated,
+            "profile": active.to_dict(),
             "engine": {
-                "name": "ScholarFlow local diagnostics",
+                "name": ENGINE_NAME,
+                "version": ENGINE_VERSION,
+                "ruleset_version": RULESET_VERSION,
                 "spelling": (
                     "pyspellchecker 0.8.2 (MIT), bundled dictionary"
                     if checker is not None
                     else "unavailable"
                 ),
+                "spelling_available": checker is not None,
                 "external_services": "none",
+                "checked_categories": sorted(wanted),
             },
         }
 
@@ -1064,7 +1379,7 @@ class DiagnosticEngine:
     ) -> list[Diagnostic]:
         clean = view.text
         found: list[Diagnostic] = []
-        rule_counts: dict[str, int] = self._rule_counts
+        rule_counts: dict[str, int] = self._run.rule_counts
 
         def add(
             rule: str,
@@ -1120,11 +1435,33 @@ class DiagnosticEngine:
             return True
         if part in self.extra_words or part in STOPWORDS or part in _ACADEMIC_TERMS:
             return True
+        if is_protected_word(part):
+            return True
         return _dictionary_knows(part, checker)
 
     def _spelling_rules(self, clean: str, protected, checker, add) -> None:
+        """Report unknown words, and distinguish a typo from an unfamiliar word.
+
+        Deciding a word is misspelled is the most intrusive thing this engine
+        does, so it is deliberately conservative:
+
+        * a word the author capitalises mid-sentence anywhere in the document is
+          treated as a proper noun and never touched;
+        * the bundled protection vocabulary (names, caste and community terms,
+          place names, field concepts, survey abbreviations) is checked first;
+        * a token that looks like an abbreviation, carries digits, is written in
+          another script, or builds out of known parts is left alone;
+        * a finding becomes a confident *misspelling* with a replacement only
+          when an ordinary one-edit neighbour exists in the dictionary. Without
+          such a neighbour the word is reported as *unknown* with **no**
+          replacement offered, because an unfamiliar word is not an error.
+        """
         seen: set[tuple[int, int]] = set()
+        barren = 0
         for match in _WORD_RE.finditer(clean):
+            if barren >= MAX_BARREN_SPELLING_WORDS:
+                self._run.spelling_stopped_early = True
+                break
             raw = match.group(0)
             start, end = match.start(), match.end()
             if (start, end) in seen:
@@ -1134,16 +1471,21 @@ class DiagnosticEngine:
                 continue
             if any(char.isdigit() for char in raw):
                 continue
-            if raw[0].isupper() and not raw.isupper():
-                continue
-            if raw.isupper():
-                continue
             if not re.search(r"[A-Za-z]", raw):
                 # The bundled dictionary is English; words written in another
                 # script (or transliterated symbols) are not "misspellings".
                 continue
+            if looks_like_acronym(raw):
+                continue
+            capitalized = raw[:1].isupper() and not raw.isupper()
             word = unicodedata.normalize("NFC", raw.lower())
             if len(word) < SPELLING_MIN_WORD_LENGTH:
+                continue
+            if is_protected_word(word, capitalized=capitalized):
+                continue
+            if word in self._proper_nouns:
+                # Capitalised in the middle of a sentence somewhere in this
+                # document: a name, not a typo.
                 continue
             parts = [part for part in re.split(r"['’\-]", word) if part]
             if len(parts) > 1:
@@ -1152,26 +1494,56 @@ class DiagnosticEngine:
                     continue
             elif self._part_is_acceptable(word, checker):
                 continue
-            candidates = (
-                _spelling_candidates(word, checker)
-                if self._suggestion_budget > 0
-                else ()
-            )
-            self._suggestion_budget -= 1
-            confidence = "high" if len(word) >= 6 and candidates else "medium"
-            suggestion = f" Did you mean \"{candidates[0]}\"?" if candidates else ""
+            before_count = sum(self._run.rule_counts.get(name, 0) for name in SPELLING_RULES)
+            candidates = _spelling_candidates(word, checker)
+
+            if candidates:
+                # A one-edit neighbour exists, so this is very likely a typo.
+                # A capitalised token is still reported more cautiously: it
+                # could be an unfamiliar name the author has not used twice.
+                rule = "spelling.misspelling"
+                confidence = "high" if not capitalized else "medium"
+                suggestion = f" Did you mean \"{candidates[0]}\"?"
+                message = f"\"{raw}\" looks like a misspelling.{suggestion}"
+                explanation = (
+                    "The local dictionary has no such word, but it is one letter "
+                    "away from a common word. If this is a name or a term from your "
+                    "field, add it to your personal dictionary instead."
+                )
+                if capitalized:
+                    explanation += (
+                        " A word that starts a sentence is also how a proper name "
+                        "can appear, so check before accepting."
+                    )
+            elif capitalized:
+                # A word the author capitalised, with no dictionary neighbour:
+                # read it as a name and say nothing. Flagging every unfamiliar
+                # proper noun is the fastest way to make a checker useless.
+                continue
+            else:
+                rule = "spelling.unknown-word"
+                confidence = "medium"
+                message = f"\"{raw}\" is not in the local dictionary."
+                explanation = (
+                    "No obvious correction was found, so nothing is suggested: an "
+                    "unfamiliar word is not necessarily wrong. If it is a name, a "
+                    "caste or community term, a place or a term from your field, add "
+                    "it to your personal dictionary and it will not be flagged again."
+                )
             add(
-                "spelling.unknown-word",
+                rule,
                 "spelling",
-                f"\"{raw}\" is not in the local dictionary.{suggestion}",
-                "Check the spelling. Names, field-specific terms and words in other "
-                "languages can be added to your personal dictionary so they are never "
-                "flagged again.",
+                message,
+                explanation,
                 start,
                 end,
                 candidates,
                 confidence=confidence,
             )
+            if self._run.rule_counts.get(rule, 0) > before_count:
+                barren = 0
+            else:
+                barren += 1
 
     # -- punctuation and capitalization -----------------------------------
 
@@ -1520,7 +1892,8 @@ class DiagnosticEngine:
             if not words:
                 continue
 
-            if (start, end) in readability_sentences and len(words) >= LONG_SENTENCE_WORDS:
+            long_sentence = self._run.threshold("long_sentence_words", LONG_SENTENCE_WORDS)
+            if (start, end) in readability_sentences and len(words) >= long_sentence:
                 add(
                     "readability.long-sentence",
                     "readability",
@@ -1567,7 +1940,7 @@ class DiagnosticEngine:
 
         for block in re.finditer(r"[^\n\u0000]+(?:\n(?!\n)[^\n\u0000]+)*", clean):
             words = _WORD_RE.findall(block.group(0))
-            if len(words) < LONG_PARAGRAPH_WORDS:
+            if len(words) < self._run.threshold("long_paragraph_words", LONG_PARAGRAPH_WORDS):
                 continue
             add(
                 "readability.long-paragraph",

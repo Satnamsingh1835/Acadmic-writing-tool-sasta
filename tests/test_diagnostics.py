@@ -132,7 +132,12 @@ def test_spelling_category_reports_offsets_and_candidates(engine):
     assert text[item["start"]:item["end"]] == "teh"
     assert item["kind"] == "error"
     assert "the" in item["replacements"]
-    assert item["rule"] == "spelling.unknown-word"
+    # Stage 3 split the spelling family in two: a word one edit away from a
+    # dictionary word is a *misspelling* (with a replacement), while a word with
+    # no candidate is merely *unknown* (no replacement). "teh" has the candidate
+    # "the", so it is the former. The offsets and the contract are unchanged.
+    assert item["rule"] == "spelling.misspelling"
+    assert item["confidence"] == "high"
     check_offsets(text, report)
 
 
@@ -530,7 +535,11 @@ def test_findings_are_capped_for_very_long_documents(engine):
     assert report["truncated"] is True
     assert len(report["diagnostics"]) <= 600
     # A single rule cannot swamp the report or the marker layer.
-    spelling = [item for item in report["diagnostics"] if item["rule"] == "spelling.unknown-word"]
+    spelling = [
+        item
+        for item in report["diagnostics"]
+        if item["rule"] in {"spelling.unknown-word", "spelling.misspelling"}
+    ]
     assert len(spelling) <= 120
     assert any("first" in note for note in report["notes"])
 
