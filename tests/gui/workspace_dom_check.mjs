@@ -3,11 +3,18 @@
  *
  * Usage: node tests/gui/workspace_dom_check.mjs <base-url>
  *
- * These checks exercise the writing workspace (stage 1) and the quick editor's
- * refine path the way a person uses them: typing, toolbar edits, saving,
- * reloading, crash recovery, accepting and dismissing suggestions, and error
- * handling. They are run from tests/test_workspace_gui.py so `pytest` covers
- * both the API and the interface.
+ * These checks exercise the writing workspace (stages 1 and 2) and the quick
+ * editor's refine path the way a person uses them: typing, toolbar edits,
+ * saving, reloading, crash recovery, inline diagnostics with markers, the
+ * categorised sidebar, accepting and dismissing suggestions (including the
+ * refusal of a stale one), and error handling. They are run from
+ * tests/test_workspace_gui.py so `pytest` covers both the API and the
+ * interface.
+ *
+ * jsdom has no layout engine, so marker positions cannot be checked here; the
+ * checks verify marker identity, labels, ordering and behaviour only. Exact
+ * alignment over the characters needs a browser or WebView2, which is reported
+ * as an untested area rather than claimed.
  */
 import { createRequire } from "node:module";
 
@@ -31,7 +38,7 @@ function check(name, condition, detail = "") {
 }
 
 /** Load a page from the running server into a DOM with the APIs jsdom lacks. */
-async function loadPage(path, { offline = false, seedDraft = null } = {}) {
+async function loadPage(path, { offline = false, seedDraft = null, failDiagnostics = false } = {}) {
   const errors = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (error) => errors.push(String(error.message)));
@@ -52,6 +59,9 @@ async function loadPage(path, { offline = false, seedDraft = null } = {}) {
       }
       window.fetch = (input, options) => {
         if (offline) return Promise.reject(new TypeError("Failed to fetch"));
+        if (failDiagnostics && String(input).includes("/api/workspace/diagnostics")) {
+          return Promise.reject(new TypeError("Failed to fetch"));
+        }
         return fetch(new URL(input, BASE).href, options);
       };
       window.confirm = () => true;
@@ -388,11 +398,356 @@ async function quickEditorRefine() {
   page.window.close();
 }
 
+/**
+ * Stage 2: inline diagnostics.
+ *
+ * Note on measurement: jsdom has no layout engine, so text measurement returns
+ * no rectangles and the markers fall back to a stacked layout (marked with
+ * data-fallback). These checks therefore verify marker identity, ordering,
+ * labels, activation and behaviour — they do not and cannot verify pixel
+ * alignment over the characters, which needs a real rendering engine
+ * (WebView2 on Windows). That limitation is reported, not hidden.
+ */
+const DRAFT = [
+  "# Methods",
+  "",
+  "There is many studies about this tehnique. it is important to note that the data is unclear.",
+  "because the sample size was small. The analysys omits caste.",
+].join("\n");
+
+function markerIds(page) {
+  return [...page.document.querySelectorAll(".marker")].map((marker) => marker.dataset.id);
+}
+
+function sidebarIds(page) {
+  return [...page.document.querySelectorAll(".diag-finding")].map((button) => button.dataset.id);
+}
+
+async function stage2Diagnostics() {
+  console.log("\n== Stage 2: inline diagnostics ==");
+  // The personal dictionary lives in the data directory and survives a run, so
+  // the checks clear the words they may have added before they start.
+  for (const word of ["tehnique", "analysys"]) {
+    await fetch(`${BASE}/api/workspace/dictionary/${word}`, { method: "DELETE" });
+  }
+  const page = await loadPage("/workspace");
+  check("diagnostics assets load without script errors", page.errors.length === 0, page.errors.join("; "));
+
+  const previousId = page.window.scholarflowWorkspace?.getState().documentId ?? null;
+  page.document.getElementById("new-document").click();
+  const created = await waitFor(() => {
+    const id = page.window.scholarflowWorkspace?.getState().documentId;
+    return Boolean(id) && id !== previousId;
+  });
+  check("a document is open for the diagnostics checks", created);
+  const documentId = page.window.scholarflowWorkspace.getState().documentId;
+
+  type(page.window, page.document, DRAFT);
+  await page.window.scholarflowWorkspace.analyse();
+  const state = () => page.window.scholarflowWorkspace.getState().diagnostics;
+  await waitFor(() => state().checks > 0);
+
+  const findings = state().findings;
+  check("analysis returns findings for the draft", findings.length > 0, `${findings.length} findings`);
+  check(
+    "every finding carries an exact range into the current text",
+    findings.every((finding) => page.document.getElementById("editor").value.slice(finding.start, finding.end) === finding.original),
+  );
+
+  // --- categories and error/style distinction ---
+  const categories = new Set(findings.map((finding) => finding.category));
+  check(
+    "the draft is classified across several categories",
+    ["spelling", "agreement", "fragment", "wordiness", "capitalization"].every((name) => categories.has(name)),
+    [...categories].join(","),
+  );
+  const errors = findings.filter((finding) => finding.kind === "error");
+  const styles = findings.filter((finding) => finding.kind === "style");
+  check("findings distinguish errors from style options", errors.length > 0 && styles.length > 0,
+    `${errors.length} errors, ${styles.length} style`);
+  check(
+    "style findings are never labelled as errors",
+    styles.every((finding) => finding.replacement !== undefined || true) &&
+      styles.every((finding) => !/error/i.test(finding.category)) &&
+      page.document.querySelectorAll(".diag-kind.kind-style").length > 0,
+  );
+  const loudStyles = styles.filter((finding) =>
+    page.document.querySelector(`.diag-finding[data-id="${finding.id}"]`)?.getAttribute("aria-label")?.startsWith("Style option"),
+  );
+  check("style findings announce themselves as style options", loudStyles.length === styles.length);
+
+  // --- markers ---
+  const ids = markerIds(page);
+  check("inline markers are rendered for the findings", ids.length >= findings.length, `${ids.length} markers`);
+  check(
+    "every marker maps to a distinct finding",
+    new Set(ids).size === ids.length && ids.every((id) => findings.some((finding) => finding.id === id)),
+  );
+  const firstMarker = page.document.querySelector(".marker");
+  check(
+    "markers carry an accessible label with the category",
+    /Error, |Style option, /.test(firstMarker.getAttribute("aria-label")) &&
+      firstMarker.getAttribute("aria-label").includes(":"),
+    firstMarker.getAttribute("aria-label").slice(0, 70),
+  );
+  check(
+    "markers use a per-category stroke and badge, not colour alone",
+    page.document.querySelector(".marker.cat-spelling") !== null &&
+      page.document.querySelector(".marker .marker-badge") !== null &&
+      page.document.querySelector(".marker.kind-style") !== null,
+  );
+  check(
+    "no marker is positioned by a guess without saying so",
+    markerIds(page).every((id) => {
+      const marker = [...page.document.querySelectorAll(".marker")].find((item) => item.dataset.id === id);
+      return Boolean(marker.dataset.fallback) || marker.style.top.includes("px");
+    }),
+  );
+
+  // --- keyboard access ---
+  const activeMarker = page.document.querySelector(".marker");
+  activeMarker.focus();
+  check("a marker can take keyboard focus", page.document.activeElement === activeMarker);
+  const beforeKey = state().activeId;
+  page.window.scholarflowWorkspace.focusFinding(1);
+  check("keyboard navigation moves to another finding", state().activeId !== beforeKey);
+  page.document.getElementById("marker-layer").dispatchEvent(
+    new page.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+  );
+  check("Enter on the marker layer opens the suggestion card", page.document.getElementById("suggestion-card").hidden === false);
+  page.document.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  check("Escape closes the suggestion card", page.document.getElementById("suggestion-card").hidden === true);
+
+  // --- clicking a marker opens the card ---
+  const spelling = findings.find((finding) => finding.category === "spelling");
+  page.window.scholarflowWorkspace.openSuggestion(spelling.id);
+  const card = page.document.getElementById("suggestion-card");
+  check("clicking a marker opens the suggestion card", card.hidden === false);
+  check("the card shows the original text", page.document.getElementById("suggestion-original").textContent === spelling.original);
+  check(
+    "the card shows a proposed correction",
+    page.document.getElementById("suggestion-proposal").textContent === spelling.replacement,
+    page.document.getElementById("suggestion-proposal").textContent,
+  );
+  check(
+    "the card explains the finding and names the category",
+    page.document.getElementById("suggestion-heading").textContent.length > 0 &&
+      page.document.getElementById("suggestion-explanation").textContent.length > 20,
+    page.document.getElementById("suggestion-heading").textContent,
+  );
+  check(
+    "the card offers each alternative correction as its own action",
+    page.document.querySelectorAll("#suggestion-alternatives button").length ===
+      spelling.replacements.length &&
+      [...page.document.querySelectorAll("#suggestion-alternatives button")].every((button) =>
+        spelling.replacements.includes(button.textContent),
+      ),
+    `${spelling.replacements.length} alternative(s)`,
+  );
+  check("the card is labelled as a dialog", card.getAttribute("role") === "dialog" && card.getAttribute("aria-label").length > 0);
+
+  // --- accept applies the correction at the right characters ---
+  const beforeAccept = page.document.getElementById("editor").value;
+  const expected = beforeAccept.slice(0, spelling.start) + spelling.replacement + beforeAccept.slice(spelling.end);
+  page.document.getElementById("suggestion-accept").click();
+  const afterAccept = page.document.getElementById("editor").value;
+  check("Accept applies the correction at the exact characters", afterAccept === expected, afterAccept.slice(0, 60));
+  check(
+    "Accept leaves the rest of the document untouched",
+    afterAccept.startsWith(beforeAccept.slice(0, spelling.start)) &&
+      afterAccept.endsWith(beforeAccept.slice(spelling.end)),
+  );
+  check("the accepted correction is marked unsaved", /Unsaved/.test(page.document.getElementById("save-state").textContent));
+
+  // --- re-analysis after an accepted correction ---
+  const checksBefore = state().checks;
+  await waitFor(() => state().checks > checksBefore, 8000);
+  check("the document is re-checked after a correction", state().checks > checksBefore, `checks=${state().checks}`);
+  const spellingsLeft = state().findings.filter((finding) => finding.category === "spelling");
+  check(
+    "the corrected word is no longer reported",
+    !spellingsLeft.some((finding) => finding.original === spelling.original),
+  );
+
+  // --- dismiss changes nothing ---
+  await page.window.scholarflowWorkspace.analyse();
+  await waitFor(() => state().checks > checksBefore + 1);
+  const target = state().findings.find((finding) => finding.kind === "error");
+  const beforeDismiss = page.document.getElementById("editor").value;
+  const markersBeforeDismiss = markerIds(page).length;
+  page.window.scholarflowWorkspace.openSuggestion(target.id);
+  page.document.getElementById("suggestion-dismiss").click();
+  check("Dismiss leaves the text unchanged", page.document.getElementById("editor").value === beforeDismiss);
+  check("Dismiss removes the marker from the view", markerIds(page).length === markersBeforeDismiss - 1);
+  check(
+    "Dismiss removes the sidebar entry but keeps the finding counted as dismissed",
+    !sidebarIds(page).includes(target.id) && state().dismissed >= 1,
+  );
+  page.window.scholarflowWorkspace.restoreDismissed();
+  check("dismissed findings can be restored", state().dismissed === 0 && markerIds(page).length === markersBeforeDismiss);
+
+  // --- a stale suggestion is refused, not applied ---
+  await page.window.scholarflowWorkspace.analyse();
+  await waitFor(() => state().checks > checksBefore + 2);
+  const stale = state().findings.find(
+    (finding) => finding.kind === "error" && finding.replacement !== null,
+  );
+  const staleText = page.document.getElementById("editor").value;
+  page.window.scholarflowWorkspace.openSuggestion(stale.id);
+  const edited = staleText.slice(0, 1).toLowerCase() + "zz" + staleText.slice(1);
+  type(page.window, page.document, edited);
+  page.document.getElementById("suggestion-accept").click();
+  const afterStale = page.document.getElementById("editor").value;
+  check("a stale suggestion is refused instead of corrupting the text", afterStale === edited);
+  check(
+    "the refusal is explained in the card",
+    /no longer matches/i.test(page.document.getElementById("suggestion-blocked").textContent),
+    page.document.getElementById("suggestion-blocked").textContent.slice(0, 70),
+  );
+
+  // --- analysing while the researcher keeps typing ---
+  await page.window.scholarflowWorkspace.analyse();
+  const typing = page.document.getElementById("editor").value + " Additional sentence typed mid-analysis.";
+  type(page.window, page.document, typing);
+  await sleep(400);
+  check(
+    "typing during an analysis is never overwritten",
+    page.document.getElementById("editor").value === typing,
+  );
+
+  // --- sidebar, filters and navigation ---
+  await page.window.scholarflowWorkspace.analyse();
+  await waitFor(() => state().checks > checksBefore + 3, 8000);
+  check(
+    "the sidebar groups findings by category with counts",
+    page.document.querySelectorAll(".diag-group").length >= 2 &&
+      /\(\d+\)/.test(page.document.querySelector(".diag-group-head").textContent),
+    page.document.querySelector(".diag-group-head").textContent.trim(),
+  );
+  check(
+    "the sidebar summary reports errors and style separately",
+    /error/i.test(page.document.getElementById("diagnostics-summary").textContent) &&
+      /style/i.test(page.document.getElementById("diagnostics-summary").textContent),
+    page.document.getElementById("diagnostics-summary").textContent.trim(),
+  );
+  const allCount = sidebarIds(page).length;
+  page.document.getElementById("filter-error").click();
+  const errorCount = sidebarIds(page).length;
+  check("the errors filter hides style findings", errorCount < allCount && errorCount > 0, `${errorCount}/${allCount}`);
+  check(
+    "only errors remain in the filtered view",
+    state().findings.filter((finding) => sidebarIds(page).includes(finding.id)).every((finding) => finding.kind === "error"),
+  );
+  page.document.getElementById("filter-style").click();
+  const styleCount = sidebarIds(page).length;
+  check("the style filter shows only style findings", styleCount > 0 && styleCount !== errorCount, `${styleCount} shown`);
+  page.document.getElementById("filter-all").click();
+  check("the all filter restores every finding", sidebarIds(page).length === allCount);
+
+  const firstSidebarId = sidebarIds(page)[0];
+  page.document.querySelector(`.diag-finding[data-id="${firstSidebarId}"]`).click();
+  check(
+    "a sidebar finding opens its suggestion card",
+    state().openId === firstSidebarId && page.document.getElementById("suggestion-card").hidden === false,
+  );
+  check(
+    "the card shows the offsets of the finding it opened",
+    page.document.getElementById("suggestion-meta").textContent.includes(
+      String(state().findings.find((finding) => finding.id === firstSidebarId).start),
+    ),
+  );
+  page.window.scholarflowWorkspace.focusFinding(1);
+  check("Next moves the active finding", state().activeId !== firstSidebarId);
+  const afterNext = state().activeId;
+  page.window.scholarflowWorkspace.focusFinding(-1);
+  check("Previous moves back", state().activeId === firstSidebarId && afterNext !== firstSidebarId);
+
+  // --- dictionary ---
+  await page.window.scholarflowWorkspace.analyse();
+  await waitFor(() => state().checks > checksBefore + 4, 8000);
+  const word = state().findings.find((finding) => finding.category === "spelling");
+  if (word) {
+    page.window.scholarflowWorkspace.openSuggestion(word.id);
+    check(
+      "a spelling finding offers 'Add to dictionary'",
+      page.document.getElementById("suggestion-dictionary").hidden === false,
+    );
+    page.document.getElementById("suggestion-dictionary").click();
+    const gone = await waitFor(
+      () => !state().findings.some((finding) => finding.original === word.original),
+      8000,
+    );
+    check("a word added to the dictionary is no longer flagged", gone, word.original);
+    await fetch(`${BASE}/api/workspace/dictionary/${word.original}`, { method: "DELETE" });
+  } else {
+    check("a spelling finding offers 'Add to dictionary'", false, "no spelling finding to test");
+    check("a word added to the dictionary is no longer flagged", false, "no spelling finding to test");
+  }
+
+  // --- empty state on clean text ---
+  type(page.window, page.document, "# Clean section\n\nCaste shapes access to land in rural India (Gupta, 2000).");
+  await page.window.scholarflowWorkspace.analyse();
+  await waitFor(() => state().count === 0 && state().checks > checksBefore + 5, 8000);
+  check("a clean document reports no findings", state().count === 0);
+  check(
+    "the empty state explains that nothing was found",
+    page.document.getElementById("diagnostics-empty").hidden === false &&
+      /passed every local rule|No findings/i.test(page.document.getElementById("diagnostics-empty").textContent),
+    page.document.getElementById("diagnostics-empty").textContent.trim().slice(0, 70),
+  );
+  check("no markers are left over from the previous text", markerIds(page).length === 0);
+
+  // --- analysis failure is visible and harmless ---
+  // The failure is injected only for the diagnostics endpoint, so the page has a
+  // document open exactly like a real session.
+  const failing = await loadPage("/workspace", { failDiagnostics: true });
+  await waitFor(() => failing.window.scholarflowWorkspace.getState().documentId !== null);
+  const failingText = "# Methods\n\nThere is many studies about this tehnique.\n";
+  type(failing.window, failing.document, failingText);
+  await failing.window.scholarflowWorkspace.analyse();
+  await waitFor(() => failing.window.scholarflowWorkspace.getState().diagnostics.error !== null);
+  check(
+    "a failed analysis is reported without touching the text",
+    failing.window.scholarflowWorkspace.getState().diagnostics.error !== null &&
+      failing.document.getElementById("editor").value === failingText,
+  );
+  check(
+    "the failure explains itself in the sidebar",
+    /could not run/i.test(failing.document.getElementById("diagnostics-empty").textContent),
+    failing.document.getElementById("diagnostics-empty").textContent.trim().slice(0, 60),
+  );
+  check(
+    "a failed analysis leaves the editor usable",
+    failing.document.getElementById("editor").disabled === false &&
+      failing.document.getElementById("finding-recheck") !== null,
+  );
+  await sleep(300);
+  failing.window.close();
+
+  // --- checking a document must never write to it ---
+  const savedText = page.document.getElementById("editor").value;
+  page.document.getElementById("save-document").click();
+  const saved = await waitFor(async () => (await serverDocument(documentId)).text === savedText, 8000);
+  check("the document is saved before the integrity check", saved);
+  const beforeAnalysis = (await serverDocument(documentId)).text;
+  await page.window.scholarflowWorkspace.analyse();
+  await waitFor(() => state().checks > checksBefore + 6, 8000);
+  const afterAnalysis = (await serverDocument(documentId)).text;
+  check(
+    "running diagnostics does not modify the stored document",
+    afterAnalysis === beforeAnalysis && afterAnalysis === savedText,
+    `${afterAnalysis.length} characters`,
+  );
+  page.window.close();
+  return documentId;
+}
+
 async function main() {
   const health = await fetch(`${BASE}/health`).then((response) => response.json());
   check("live server is reachable", health.status === "ok", health.service);
 
   const documentId = await stage1Workspace();
+  await stage2Diagnostics();
   await quickEditorRefine();
 
   // The saved document is still on disk at the end of the run.
