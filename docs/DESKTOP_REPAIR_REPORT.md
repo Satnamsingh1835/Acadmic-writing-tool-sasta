@@ -1,7 +1,39 @@
 # ScholarFlow desktop repair — findings and verification
 
-Branch: `arena/883f6125-acadmic-writing-tool-sasta` · Commit: `2bb8de9`
+Branch: `arena/883f6125-acadmic-writing-tool-sasta`
+**Code commit verified by the packaged Windows smoke test:
+`62585396f1e3882c2487fbe92c8c1240c86f9568`**
 Pull request: [#32](https://github.com/Satnamsingh1835/Acadmic-writing-tool-sasta/pull/32)
+
+## Provenance of the tested build
+
+| Item | Value |
+|---|---|
+| Tested code commit | `62585396f1e3882c2487fbe92c8c1240c86f9568` |
+| Workflow run (Windows desktop build) | <https://github.com/Satnamsingh1835/Acadmic-writing-tool-sasta/actions/runs/38515140216> |
+| Run head SHA (verified via API) | `62585396f1e3882c2487fbe92c8c1240c86f9568` — identical to the tested commit |
+| Result | `success` (tests → PyInstaller build → packaged smoke test all passed) |
+| Application artifact | `ScholarFlow-Windows-onedir` (artifact id `11872151027`, 27,593,125 bytes, built 2026-10-14T05:11:14Z) — its `workflow_run.head_sha` is `62585396…9568`, so the artifact was built from this commit |
+| Smoke-test log artifact | `scholarflow-smoke-log` (artifact id `11872250832`, 668 bytes zip, same run and head SHA) |
+| PyInstaller log artifact | `pyinstaller-logs` (artifact id `11872006243`) |
+
+Direct artifact links (GitHub sign-in as the repository owner also works through
+the run page → *Artifacts*):
+
+- Application: <https://github.com/Satnamsingh1835/Acadmic-writing-tool-sasta/actions/runs/38515140216/artifacts/11872151027>
+- Smoke-test log: <https://github.com/Satnamsingh1835/Acadmic-writing-tool-sasta/actions/runs/38515140216/artifacts/11872250832>
+
+A copy of the same 28-check report, produced locally by the identical code path,
+is kept outside the repository at `scholarflow-smoke-log-6258539.txt` in the
+workspace root. Downloading artifacts *from this sandbox* is not possible
+because GitHub redirects artifact and log downloads to
+`*.blob.core.windows.net`, which is outside this environment's network allowlist;
+the artifacts above are present, unexpired (verified through the API) and
+downloadable from a normal browser.
+
+Commit `6258539` is the last commit that changes application code. Any later
+commit on this branch contains documentation or CI reporting only; check
+`git log --oneline` for the current head.
 
 This report separates what was reproduced and fixed from what still requires
 the researcher's own Windows computer.
@@ -53,34 +85,55 @@ document content or credentials.
 
 ## 3. Verification: what passed, where
 
-### Verified locally in this sandbox
+Test counts are reported once and separated by where they ran. Earlier revisions
+of the pull request quoted "123 passed"; that count predated the two regression
+tests added by this repair and is superseded by the numbers below.
+
+### A. Local checks in this Linux sandbox (same code as the tested commit)
 
 | Check | Result |
 |---|---|
-| `pytest` (full repository suite) | 125 passed |
-| `python -m tools.repository_check` | 144 files, 0 failures |
-| `flake8 --select=E9,F63,F7,F82` | clean |
-| `python desktop_app.py --smoke-test` | 28/28 checks PASS |
+| `pytest` (full repository suite, `tests/` + root `test_*.py`) | **125 passed** |
+| `python -m tools.repository_check` | **145 files, 0 failures** |
+| `flake8 --select=E9,F63,F7,F82` | clean (0 findings) |
+| `python desktop_app.py --smoke-test --smoke-report …` | **28 checks PASS, 0 FAIL**, exit 0 |
 | Desktop startup simulation (listener → health → window URL → editor/asset/library requests → `/editor/rewrite`) | PASS |
-| Editor driven end-to-end in jsdom against a live server: sample, all three modes, results, tabs, receipts, upload, copy, clear, error toast, AI disabled fallback | PASS |
-| Library driven end-to-end in jsdom: status, add reference, duplicate detection, listing, search, CSL import, TXT indexing, passage search, matrix, settings, Zotero failure message | PASS |
-| PDF indexing with extracted page numbers, Markdown indexing, search filters (type/year/sort/author) via API | PASS |
-| Persistence across a full server restart | PASS |
-| PyInstaller analysis build: `web/` assets and all Python modules present in the bundle | PASS |
+| Editor driven end-to-end in a DOM against a live server: sample, all three modes, results, tabs, receipts, TXT upload, copy, clear, error toast, AI-disabled fallback | PASS |
+| Library driven end-to-end in a DOM: status, add reference, duplicate detection, listing, search, CSL import, TXT indexing, passage search, matrix, settings, Zotero failure message | PASS |
+| API probes: PDF indexing with extracted page numbers, Markdown indexing, search filters (type/year/sort/author) | PASS |
+| Persistence across a full process restart (fresh library instance on the same database file) | PASS |
+| PyInstaller analysis build: `web/` assets and every Python module present in the bundle | PASS |
 
-### Verified in CI (GitHub Actions, real Windows)
+### B. Windows CI (GitHub Actions, `windows-latest`, run 38515140216 at `62585396…`)
 
-| Check | Result |
+| Step | Result |
 |---|---|
-| Python CI, Research Synthesist CI, R, CodeQL on commit `2bb8de9` | pass |
-| Windows job: tests, PyInstaller one-folder build | pass |
-| Windows job: **packaged `ScholarFlow.exe --smoke-test`** | pass (this gate failed before the windowed-mode fix, which is how the missing output path was confirmed) |
+| `Run tests` (`python -m pytest -q`, same suite as above) | **pass** |
+| `Build one-folder desktop distribution` (PyInstaller) | pass |
+| **`Smoke-test the packaged application`** (`ScholarFlow.exe --smoke-test`) | **pass** — 28 checks, no `SMOKE FAIL` lines |
+| `Upload build artifact` | pass (`ScholarFlow-Windows-onedir`) |
+| Other workflows on the same commit: Python CI, Research Synthesist CI, R, CodeQL | all pass |
 
-The packaged check covers: bundled assets, `/health`, editor capabilities, all
-three editor profiles producing refined text with receipts and safeguards, the
-no-provider fallback, library health/settings, adding a reference and finding it,
-CSL JSON import, TXT indexing, passage search, matrix add/list, and reopening the
-SQLite database from disk.
+The 28 packaged checks are: six bundled assets, six page/script/style routes,
+`/health`, editor capabilities, three editor profiles producing refined text with
+receipts and safeguards, the AI-requested local fallback, library health,
+library settings, adding a reference, finding that reference by search, CSL JSON
+import, TXT document indexing, passage search, matrix add, matrix list, and
+reopening the SQLite database from disk to prove persistence.
+
+Notes on what these results do and do not cover:
+
+- The Windows `Run tests` step ran the identical suite that reports **125 passed**
+  locally. The number printed inside that CI job is not quoted here because this
+  sandbox cannot read the job log: GitHub redirects log downloads to
+  `*.blob.core.windows.net`, which is outside this environment's allowlist, so
+  `gh run view --log` fails with an EOF error. The step's pass/fail status and
+  the artifact metadata were taken from the GitHub API, which is reachable.
+- The packaged smoke test passed *after* the windowed-build fix. Before that fix
+  the same gate failed on Windows, which is how the missing-output-path defect
+  was found; that failure is genuine test evidence, not a flake.
+- Everything in section B was executed on Windows. Everything in section A was
+  executed on Linux against the same commit.
 
 ### Not covered anywhere — requires your Windows computer
 
@@ -111,11 +164,16 @@ These are configuration requirements, not defects:
 
 ### Get the build
 
-Download the artifact from the latest green **Windows desktop build** run for this
-branch: <https://github.com/Satnamsingh1835/Acadmic-writing-tool-sasta/pull/32/checks>
-→ the `build-windows-desktop` check → **Artifacts** → `ScholarFlow-Windows-onedir.zip`
-(14-day retention). The same run also uploads `scholarflow-smoke-log` with the
-per-check results produced by the packaged executable.
+Download the application from the run listed in the provenance table above:
+<https://github.com/Satnamsingh1835/Acadmic-writing-tool-sasta/actions/runs/38515140216>
+→ **Artifacts** → `ScholarFlow-Windows-onedir.zip` (direct link:
+<https://github.com/Satnamsingh1835/Acadmic-writing-tool-sasta/actions/runs/38515140216/artifacts/11872151027>).
+Artifacts expire after 14 days; if the link has expired, open
+<https://github.com/Satnamsingh1835/Acadmic-writing-tool-sasta/pull/32/checks> →
+`build-windows-desktop` → the newest green **Windows desktop build** run → **Artifacts**.
+
+The same run also uploads `scholarflow-smoke-log` with the per-check results the
+packaged executable produced on Windows.
 
 Or build it yourself: install Python 3.12 (`py -3.12` must work), then in the
 repository root:
@@ -127,17 +185,31 @@ repository root:
 The script runs the tests, builds, and then runs the packaged smoke check — if the
 check fails, treat the build as broken and send the printed `SMOKE FAIL` lines.
 
-### Install or replace
+### Install or replace (beginner steps, Windows 11)
 
-1. Close ScholarFlow if it is running.
-2. Extract the zip anywhere (for example `C:\Users\<you>\Apps\ScholarFlow`).
-   Keep the whole folder together; do not move `ScholarFlow.exe` out on its own.
-3. Replace: rename the old `ScholarFlow` folder (for example to
-   `ScholarFlow-old`) and extract the new folder in its place — renaming instead
-   of deleting lets you roll back.
-4. Your data is not inside the app folder. It lives in
-   `%LOCALAPPDATA%\ScholarFlow` (`research-library.sqlite3`, `documents`, `logs`)
-   and survives replacement. Copy that folder somewhere safe before a big change.
+1. Close ScholarFlow if it is already running.
+2. In your browser, sign in to GitHub as the repository owner, open the run link
+   above, scroll to **Artifacts**, and click **ScholarFlow-Windows-onedir.zip**.
+   Your browser saves it in the **Downloads** folder.
+3. Right-click the downloaded **ScholarFlow-Windows-onedir.zip** → **Extract All…**
+   → choose a permanent place such as `C:\Users\<you>\Apps\ScholarFlow` → **Extract**.
+   Windows 11 can also open the file and use the **Extract all** button at the top.
+4. Open the extracted folder. Inside it you will see `ScholarFlow.exe` next to an
+   `_internal` folder. Keep them together — do not move `ScholarFlow.exe` out on
+   its own, and do not run it from inside the zip.
+5. To replace an older copy: rename the existing `ScholarFlow` folder (for example
+   to `ScholarFlow-old`) instead of deleting it, then put the new folder in its
+   place. If the new version misbehaves you can rename the old folder back.
+6. Your work is **not** inside the app folder. It is stored in
+   `%LOCALAPPDATA%\ScholarFlow` (`research-library.sqlite3`, `documents`, `logs`).
+   Paste `%LOCALAPPDATA%\ScholarFlow` into File Explorer's address bar to see it,
+   and copy that folder somewhere safe before a big change.
+7. Double-click `ScholarFlow.exe`.
+   - If Windows shows a blue "Windows protected your PC" box, click **More info**
+     → **Run anyway** (the app is unsigned).
+   - The first launch can take a few seconds while the local server starts.
+   - ScholarFlow needs the Microsoft Edge WebView2 Runtime; it is preinstalled on
+     Windows 11, so normally nothing extra is required.
 
 ### Test the Writing Editor
 
@@ -164,6 +236,7 @@ check fails, treat the build as broken and send the printed `SMOKE FAIL` lines.
 
 ### If something fails
 
-Send the file `%LOCALAPPDATA%\ScholarFlow\logs\desktop.log` (and `smoke-test.log`
-from the project root if you built locally). Both contain diagnostics without
-credentials or manuscript contents.
+Send the file `%LOCALAPPDATA%\ScholarFlow\logs\desktop.log`. Copy the path
+`%LOCALAPPDATA%\ScholarFlow\logs` into File Explorer's address bar to open the
+folder, then attach `desktop.log` to your message. It records diagnostics only —
+no credentials and no manuscript or document text.
