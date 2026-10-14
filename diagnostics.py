@@ -885,9 +885,21 @@ class _View:
     index_map: list[int]
     segments: list[tuple[int, int]]
     heading_segments: list[tuple[int, int]]
+    # Sorted positions in ``text`` where document characters were dropped
+    # immediately before, plus ``len(text)`` when characters were dropped at the
+    # end. A rule that depends on neighbouring characters (bracket matching)
+    # consults this instead of guessing across a hole.
+    gaps: tuple[int, ...] = ()
 
     def in_heading(self, position: int) -> bool:
         return any(start <= position < end for start, end in self.heading_segments)
+
+    def gap_between(self, start: int, end: int) -> bool:
+        """True when a character was dropped from the document in ``[start, end]``."""
+        if not self.gaps:
+            return False
+        index = bisect.bisect_left(self.gaps, start)
+        return index < len(self.gaps) and self.gaps[index] <= end
 
     def original_span(self, start: int, end: int) -> tuple[int, int]:
         if start >= end:
@@ -913,6 +925,7 @@ class _ViewBuilder:
         self.segments: list[tuple[int, int]] = []
         self.heading_segments: list[tuple[int, int]] = []
         self.segment_start = 0
+        self.gaps: list[int] = []
 
     def emit(self, char: str, source_index: int) -> None:
         self.pieces.append(char)
@@ -958,6 +971,10 @@ class _ViewBuilder:
                     if char == "|" and _TABLE_RE.match(raw):
                         continue
                     if mask.blocked(source_index, source_index + 1):
+                        # Document text that is not prose (a link target, a code
+                        # span, a URL) leaves a hole in the view; remember where.
+                        if not self.gaps or self.gaps[-1] != len(self.pieces):
+                            self.gaps.append(len(self.pieces))
                         if self.mapping and self.mapping[-1] != -1:
                             previous = text[self.mapping[-1]]
                             following = text[source_index + 1] if source_index + 1 < len(text) else ""
@@ -983,6 +1000,7 @@ class _ViewBuilder:
             index_map=self.mapping,
             segments=self.segments,
             heading_segments=self.heading_segments,
+            gaps=tuple(self.gaps),
         )
 
 
@@ -1558,14 +1576,14 @@ class DiagnosticEngine:
         self._apostrophe_rules(clean, protected, add)
         if "spelling" in wanted and checker is not None:
             self._spelling_rules(clean, protected, checker, add)
-        self._article_rules(clean, protected, add)
-        self._punctuation_rules(clean, protected, add)
+        self._article_rules(clean, protected, add, view)
+        self._punctuation_rules(clean, protected, add, view)
         self._capitalization_rules(clean, protected, add, view.heading_segments)
         self._tone_rules(clean, protected, add)
         self._wordiness_rules(clean, protected, add)
         self._usage_rules(clean, protected, add)
         self._clarity_rules(clean, protected, add)
-        self._repetition_rules(clean, add)
+        self._repetition_rules(clean, add, view)
         self._sentence_rules(clean, protected, add)
         return _drop_contained(found)
 
@@ -1691,7 +1709,7 @@ class DiagnosticEngine:
 
     # -- punctuation and capitalization -----------------------------------
 
-    def _punctuation_rules(self, clean: str, protected, add) -> None:
+    def _punctuation_rules(self, clean: str, protected, add, view=None) -> None:
         def inside_protected(start: int, end: int) -> bool:
             return _covers(start, end, protected)
 
@@ -1777,17 +1795,39 @@ class DiagnosticEngine:
                 confidence="medium",
             )
 
-        self._bracket_rules(clean, add, inside_protected)
+        self._bracket_rules(clean, add, inside_protected, view)
 
-    def _bracket_rules(self, clean: str, add, inside_protected) -> None:
+    def _bracket_rules(self, clean: str, add, inside_protected, view=None) -> None:
         stack: list[tuple[str, int]] = []
         pairs = {")": "(", "]": "["}
+        # Line boundaries in the view, so an unmatched bracket is judged only
+        # against the line it sits on. A link target is removed from the view and
+        # takes its closing bracket with it, so balancing the view alone reports
+        # an "unclosed [" in an ordinary sentence; if anything was elided on the
+        # line, the partner could be in the hole and the finding is suppressed.
+        line_starts = [0]
+        line_starts.extend(index + 1 for index, char in enumerate(clean) if char == "\n")
+
+        def line_end(position: int) -> int:
+            following = bisect.bisect_right(line_starts, position)
+            if following < len(line_starts):
+                return line_starts[following] - 1
+            return len(clean)
+
+        def line_start(position: int) -> int:
+            return line_starts[bisect.bisect_right(line_starts, position) - 1]
+
+        def partner_hidden(start: int, end: int) -> bool:
+            return view is not None and view.gap_between(start, end)
+
         for index, char in enumerate(clean):
             if char in "([":
                 stack.append((char, index))
             elif char in ")]":
                 if stack and stack[-1][0] == pairs[char]:
                     stack.pop()
+                elif partner_hidden(line_start(index), index):
+                    continue
                 else:
                     add(
                         "punctuation.unmatched-bracket",
@@ -1800,6 +1840,8 @@ class DiagnosticEngine:
                         confidence="medium",
                     )
         for opener, index in stack:
+            if partner_hidden(index + 1, line_end(index)):
+                continue
             add(
                 "punctuation.unclosed-bracket",
                 "punctuation",
@@ -1898,7 +1940,7 @@ class DiagnosticEngine:
                     confidence="high" if form not in HOMOPHONE_APOSTROPHE_FORMS else "medium",
                 )
 
-    def _article_rules(self, clean: str, protected, add) -> None:
+    def _article_rules(self, clean: str, protected, add, view=None) -> None:
         """`a` / `an` chosen by sound, with the exceptions that matter.
 
         Two sound classes are the whole difficulty: words spelled with a vowel
@@ -1915,6 +1957,11 @@ class DiagnosticEngine:
                 continue
             if looks_like_acronym(following):
                 # "an MBA", "a UN report": the letter does not tell you the sound.
+                continue
+            if view is not None and view.gap_between(match.end(1), match.start(2)):
+                # A code span or link target stands between the article and this
+                # word, so the two are not a pair: "a `code span` inside" is not
+                # "a inside".
                 continue
             lowered = following.lower()
             lowered_article = article.lower()
@@ -2110,13 +2157,19 @@ class DiagnosticEngine:
                     confidence="medium",
                 )
 
-    def _repetition_rules(self, clean: str, add) -> None:
+    def _repetition_rules(self, clean: str, add, view=None) -> None:
         tokens = list(_WORD_RE.finditer(clean))
         words = [match.group(0).lower() for match in tokens]
 
         for previous, current in zip(range(len(words)), range(1, len(words))):
             if words[previous] == words[current] and len(words[current]) > 1:
                 match = tokens[current]
+                if view is not None and view.gap_between(
+                    tokens[previous].end(), tokens[current].start()
+                ):
+                    # A code span, link target or URL sits between the two words,
+                    # so they are not actually written twice in a row.
+                    continue
                 # A word typed twice by accident is an objective error, not a
                 # style preference, so it is classified as one even though it
                 # lives in the repetition family. Deliberate repetition

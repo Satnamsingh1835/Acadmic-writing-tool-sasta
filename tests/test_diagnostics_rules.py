@@ -437,6 +437,105 @@ def test_overlapping_findings_are_both_kept(engine):
     assert wordiness[0]["end"] <= long_sentence[0]["end"]
 
 
+def test_citations_quotations_and_urls_are_not_prose(engine):
+    text = (
+        "Gupta (2000) argues that \"caste is not static\", as the DOI "
+        "https://doi.org/10.1000/xyz123 and the report (Singh and Rao, 2019) show.\n"
+    )
+    report = engine.analyse(text)
+    assert_offsets(text, report)
+    for item in report["diagnostics"]:
+        assert "doi.org" not in item["original"]
+        assert item["original"] not in {"10.1000/xyz123"}
+
+
+# ------------------------------------------------- elisions in the prose view
+#
+# Code spans, link targets, URLs and emails are removed from the prose view
+# before the rules run, because they must not be checked as prose. The text on
+# either side of that hole is still emitted, so a rule that compares two
+# neighbouring tokens can see a pair that was never adjacent in the document.
+# Each of the rules below was reporting legitimate writing before it learned to
+# check for the hole; the tests pin both directions, so suppression cannot
+# quietly turn into silence.
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Use the `code` the way shown.",
+        "The sample was `x` was analysed.",
+        "We examined the `alpha` the beta values.",
+    ],
+)
+def test_a_code_span_does_not_create_a_doubled_word(engine, text):
+    report = engine.analyse(text)
+    assert_offsets(text, report)
+    assert "repetition.repeated-word" not in rules(report), rules(report)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Text with a `code span` inside.",
+        "An `ok` result was seen.",
+        "We used a [link](https://example.org/x) inside it.",
+    ],
+)
+def test_an_elision_does_not_create_an_article_error(engine, text):
+    report = engine.analyse(text)
+    assert_offsets(text, report)
+    assert "grammar.article-an" not in rules(report), rules(report)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "See [the study](https://example.org/a/b) for details.",
+        "Read the [paper](https://example.org/x) in detail.",
+        "Use [one](a) and [two](b) here.",
+    ],
+)
+def test_a_markdown_link_is_not_an_unclosed_bracket(engine, text):
+    """The link target is removed from the view and takes its "]" with it."""
+    report = engine.analyse(text)
+    assert_offsets(text, report)
+    assert not rules(report) & {"punctuation.unclosed-bracket", "punctuation.unmatched-bracket"}, (
+        rules(report)
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("The sample [was small and it mattered.", "punctuation.unclosed-bracket"),
+        ("The sample was small] and it mattered.", "punctuation.unmatched-bracket"),
+    ],
+)
+def test_a_genuinely_unbalanced_bracket_is_still_reported(engine, text, expected):
+    """Suppression must not swallow the real thing."""
+    report = engine.analyse(text)
+    assert_offsets(text, report)
+    assert expected in rules(report), rules(report)
+
+
+def test_a_real_doubled_word_and_article_error_are_still_reported(engine):
+    """The neighbours in the document are judged when nothing was elided."""
+    report = engine.analyse("The the sample was small. A apple was used.\n")
+    found = rules(report)
+    assert "repetition.repeated-word" in found, found
+    assert "grammar.article-an" in found, found
+
+
+def test_an_email_address_is_masked_and_looked_up_in_bounded_time(engine):
+    """The email pattern was quadratic on a long token; it is now bounded."""
+    text = "Write to gupta@example.org or a.b+tag@sub.example.co.in about it.\n"
+    report = engine.analyse(text)
+    assert_offsets(text, report)
+    for item in report["diagnostics"]:
+        assert "@" not in item["original"], item
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -458,24 +557,3 @@ def test_a_punctuation_paste_is_not_scanned_quadratically(engine, text):
     print(f"[timing] paste of {len(text):,} characters in {elapsed:.2f}s")
     assert_offsets(text, report)
     assert elapsed < 5.0, f"{len(text):,} characters of {text[:1]!r} took {elapsed:.2f}s"
-
-
-def test_an_email_address_is_masked_and_looked_up_in_bounded_time(engine):
-    """The email pattern was quadratic on a long token; it is now bounded."""
-    text = "Write to gupta@example.org or a.b+tag@sub.example.co.in about it.\n"
-    report = engine.analyse(text)
-    assert_offsets(text, report)
-    for item in report["diagnostics"]:
-        assert "@" not in item["original"], item
-
-
-def test_citations_quotations_and_urls_are_not_prose(engine):
-    text = (
-        "Gupta (2000) argues that \"caste is not static\", as the DOI "
-        "https://doi.org/10.1000/xyz123 and the report (Singh and Rao, 2019) show.\n"
-    )
-    report = engine.analyse(text)
-    assert_offsets(text, report)
-    for item in report["diagnostics"]:
-        assert "doi.org" not in item["original"]
-        assert item["original"] not in {"10.1000/xyz123"}

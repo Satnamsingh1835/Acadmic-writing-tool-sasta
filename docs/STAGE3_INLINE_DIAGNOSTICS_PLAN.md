@@ -183,11 +183,11 @@ in `localStorage`; neither is uploaded anywhere.
 
 ```
 python -m pytest -q                                   # 304 passed
-python -m tools.repository_check                      # 172 files, 0 failures
+python -m tools.repository_check                      # 169 files, 0 failures
 python -m flake8 . --count --select=E9,F63,F7,F82      # clean
 node tests/gui/workspace_dom_check.mjs http://127.0.0.1:8800
                                                       # GUI RESULT: PASS (130/130), twice
-python desktop_app.py --smoke-test --smoke-report <f>  # 59 PASS / 0 FAIL
+python desktop_app.py --smoke-test --smoke-report <f>  # 58 PASS / 0 FAIL
 python -m tools.diagnostics_timing                     # 43 shapes, 0 flagged
 python -m tools.diagnostics_timing --pastes            # the table below
 ```
@@ -225,6 +225,26 @@ ceilings that catch an order-of-magnitude regression without failing on a slow
 shared runner.
 
 ## 9. Known false positives and honest limitations
+
+**Text removed from the prose view can create neighbours that do not exist.**
+Code spans, link targets, URLs and email addresses are removed before the rules
+run, because they must not be checked as prose. The words on either side of the
+hole are still emitted, so a rule that compares two neighbouring tokens could
+see a pair that was never adjacent in the document. Three cases were found and
+fixed by keeping a record of where the document text was elided and consulting
+it in the rules that care:
+
+| Text | Was reported as | Now |
+|---|---|---|
+| ``Use the `code` the way shown.`` | `repetition.repeated-word` ("the the"), high confidence | not reported |
+| ``Text with a `code span` inside.`` | `grammar.article-an` ("a inside") | not reported |
+| `See [the study](https://example.org/a/b).` | `punctuation.unclosed-bracket` | not reported |
+
+The suppression is bounded: a bracket is only left alone when something was
+elided between it and the end of its line, and a doubled word or article pair is
+only skipped when the hole sits exactly between the two words. Genuinely
+unbalanced brackets, genuinely doubled words and genuine article errors in the
+same documents are still reported, and tests pin both directions.
 
 - **Sentence-initial capitalised words with a candidate** are reported at
   `medium` confidence, because "Teh" could in principle be a name. A capitalised
