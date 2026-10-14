@@ -212,9 +212,27 @@
    * checks, or a browser that refuses the command) the direct assignment is
    * still correct, it simply cannot be undone by the browser.
    */
-  function applyEdit(start, end, replacement, select = false) {
+  function applyEdit(start, end, replacement, select = false, expectedOriginal = null) {
     const editor = elements.editor;
     const before = editor.value;
+    // Validate before touching anything. A range outside the document, a
+    // reversed range, or text that is no longer what the suggestion was built
+    // from would splice the wrong characters — which is how a document ends up
+    // with a duplicated clause and a missing tail. Refuse instead of guessing:
+    // a refused correction is recoverable, a wrong one is not.
+    if (
+      !Number.isInteger(start) ||
+      !Number.isInteger(end) ||
+      start < 0 ||
+      end < start ||
+      end > before.length ||
+      (expectedOriginal !== null && before.slice(start, end) !== expectedOriginal)
+    ) {
+      showStatus(
+        "That change no longer matches the document, so it was not applied. Nothing was changed — re-check and try again.",
+      );
+      return false;
+    }
     const expected = before.slice(0, start) + replacement + before.slice(end);
     editor.focus();
     editor.setSelectionRange(start, end);
@@ -236,6 +254,7 @@
     const caret = start + replacement.length;
     editor.setSelectionRange(select ? start : caret, caret);
     markDirty();
+    return true;
   }
 
   function selectedLines() {
@@ -248,6 +267,7 @@
 
   function prefixLines(prefix, togglePrefixes = []) {
     const { start, end, text } = selectedLines();
+    const original = text;
     const lines = text.split("\n");
     const alreadyApplied = togglePrefixes.some((candidate) =>
       lines.every((line) => line.trim() === "" || line.startsWith(candidate)),
@@ -262,7 +282,7 @@
         return line.trim() === "" ? line : prefix + cleaned.trimStart();
       })
       .join("\n");
-    applyEdit(start, end, updated);
+    applyEdit(start, end, updated, false, original);
   }
 
   function wrapSelection(marker) {
@@ -436,6 +456,7 @@
   // after a save the editor may already hold newer keystrokes, and overwriting
   // them lost whatever was typed while the request was in flight.
   function adopt(document_, { writeText = true } = {}) {
+    const previous = state.document;
     state.document = document_;
     state.dirty = false;
     if (writeText) {
@@ -448,12 +469,37 @@
     refreshDerived();
     renderDocumentList();
     loadHistory();
-    if (window.resetDiagnostics) window.resetDiagnostics();
+    // The findings describe the text that was analysed. Saving the same
+    // document does not change that text, so clearing them would leave the
+    // panel announcing "no issues found" about text nobody has re-checked, and
+    // would close the card the person was reading. Only a different document,
+    // or stored text written over the editor, invalidates the analysis.
+    const differentDocument = !previous || previous.id !== document_.id;
+    if (window.resetDiagnostics && (writeText || differentDocument)) {
+      window.resetDiagnostics();
+    }
   }
 
-  async function openDocument(id) {
+  async function openDocument(id, { force = false } = {}) {
     try {
       const document_ = await request(`/api/documents/${id}`);
+      const typed = elements.editor.value;
+      const sameDocument = Boolean(state.document) && state.document.id === id;
+      // Start-up opens the most recent document. On a cold start that takes a
+      // moment, and a person can already be writing — a paste into the empty
+      // editor. Those words belong to no document yet: no draft holds them and
+      // no revision of them exists. Stored text must never overwrite them, so
+      // the document identity is adopted and the typed text is kept, which the
+      // next save then stores. `force` is for the cases where loading the
+      // stored text is the whole point of the action.
+      const unowned = !state.document && typed.trim() !== "";
+      if (!force && (unowned || (sameDocument && state.dirty)) && typed !== (document_.text || "")) {
+        adopt(document_, { writeText: false });
+        markDirty();
+        clearReview("");
+        showStatus("Kept the text you had already typed, and will save it into this document.");
+        return document_;
+      }
       if (state.dirty && state.document && state.document.id !== id) {
         showStatus("The previous document had unsaved changes; they are kept in this browser session.");
       }
@@ -683,7 +729,11 @@
       return;
     }
     const replacement = pending.result.refined_text;
-    applyEdit(pending.start, pending.end, replacement, true);
+    if (!applyEdit(pending.start, pending.end, replacement, true, pending.original)) {
+      elements.reviewNote.textContent =
+        "This suggestion no longer matches the document at those positions, so it was not applied. Refine again to get a current suggestion.";
+      return;
+    }
     closeReview("Suggestion applied. Use Ctrl+Z to undo it.");
   }
 
@@ -1426,7 +1476,14 @@
       scheduleAnalysis(0);
       return;
     }
-    applyEdit(finding.start, finding.end, replacement);
+    if (!applyEdit(finding.start, finding.end, replacement, false, finding.original)) {
+      blockSuggestion(
+        "This suggestion no longer matches the text at those characters, so it was not applied. " +
+          "Re-checking the document instead.",
+      );
+      scheduleAnalysis(0);
+      return;
+    }
     closeSuggestion(`${finding.category_label} applied; the document is marked as unsaved.`);
     scheduleAnalysis(0);
   }
@@ -1574,7 +1631,7 @@
     if (!state.document) return;
     const id = state.document.id;
     elements.conflictBanner.hidden = true;
-    await openDocument(id);
+    await openDocument(id, { force: true });
     showStatus("Loaded the stored version.");
   });
   byId("conflict-overwrite").addEventListener("click", async () => {
