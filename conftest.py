@@ -20,6 +20,11 @@ def pytest_runtest_logreport(report) -> None:
     # Keep each annotation short: the API caps what it will return, and the head
     # of a traceback (the assertion and the values) is the useful part.
     lines = [line.rstrip() for line in text.splitlines() if line.strip()]
-    for line in lines[:25]:
+    # The assertion message sits at the end of a traceback, so the tail matters
+    # as much as the head. Report both, labelled, inside the annotation budget.
+    tail = lines[-25:]
+    for line in tail:
+        print(f"::error title=pytest-tail {report.nodeid}::{line[:900]}")
+    for line in lines[:15]:
         print(f"::error title=pytest {report.nodeid}::{line[:900]}")
     print(f"::error title=pytest {report.nodeid}::total failure lines {len(lines)}")
