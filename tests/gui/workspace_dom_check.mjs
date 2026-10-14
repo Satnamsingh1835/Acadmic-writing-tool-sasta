@@ -46,6 +46,7 @@ async function loadPage(
     failDiagnostics = false,
     degradeSpelling = false,
     execCommand = null,
+    delayListMs = 0,
   } = {},
 ) {
   const errors = [];
@@ -68,6 +69,11 @@ async function loadPage(
       }
       window.fetch = async (input, options) => {
         if (offline) return Promise.reject(new TypeError("Failed to fetch"));
+        if (delayListMs && /\/api\/documents(\?|$)/.test(String(input))) {
+          // A cold start on a real machine reads the list from disk; delaying it
+          // here reproduces the moment when somebody is already typing.
+          await sleep(delayListMs);
+        }
         if (failDiagnostics && String(input).includes("/api/workspace/diagnostics")) {
           return Promise.reject(new TypeError("Failed to fetch"));
         }
@@ -1022,6 +1028,348 @@ async function stage3Diagnostics() {
   return documentId;
 }
 
+
+/* The exact passage from docs/WINDOWS_DIAGNOSTICS_TEST.md section 1. Every
+ * integrity check below uses it, because it is the text the bug report is
+ * about: a heading, a citation, a quotation, a long wordy sentence, protected
+ * vocabulary and an obvious typo. */
+const CHECKLIST_PASSAGE = `# Caste and commons — field notes
+
+There is many studies about this tehnique (Gupta, 2000), and the analysys is
+inconclusive ,but the authors dont agree about the mechanism.
+
+It is important to note that, in order to understand how caste plays a crucial
+role in shaping access to land in the villages of Chamarajanagar district where
+the Vokkaliga and Dalit households were surveyed by the team between June and
+August of the fieldwork year, a number of additional interviews would have been
+necessary.
+
+As Deshpande wrote, "caste is not static", and the Adivasi households in
+Hulikere reported different tenurial arrangements.
+`;
+
+const PASSAGE_HEADING = "# Caste and commons — field notes";
+
+function spliceText(text, start, end, replacement) {
+  return text.slice(0, start) + replacement + text.slice(end);
+}
+
+/** The features that must hold whatever else happened to the document. */
+function structureChecks(prefix, value, { heading = 1, firstParagraph = 1, phrase = 1 } = {}) {
+  check(
+    `${prefix}: the heading appears exactly ${heading === 1 ? "once" : heading + " times"}`,
+    value.split(PASSAGE_HEADING).length - 1 === heading,
+  );
+  // A phrase from the first paragraph that none of the checks edits, so the
+  // count only moves when text is duplicated or lost.
+  check(
+    `${prefix}: the first paragraph appears exactly ${firstParagraph === 1 ? "once" : firstParagraph + " times"}`,
+    value.split("about the mechanism.").length - 1 === firstParagraph,
+  );
+  check(
+    `${prefix}: the long clause appears exactly ${phrase === 1 ? "once" : phrase + " times"}`,
+    value.split("role in shaping access to land").length - 1 === phrase,
+  );
+  check(`${prefix}: the final sentence is intact`, value.includes("tenurial arrangements."));
+}
+
+async function newWorkspaceDocument(page, title) {
+  const previousId = page.window.scholarflowWorkspace?.getState().documentId ?? null;
+  page.document.getElementById("new-document").click();
+  const created = await waitFor(() => {
+    const id = page.window.scholarflowWorkspace?.getState().documentId;
+    return Boolean(id) && id !== previousId;
+  });
+  if (title) {
+    const field = page.document.getElementById("doc-title");
+    field.value = title;
+    field.dispatchEvent(new page.window.Event("input", { bubbles: true }));
+  }
+  return created ? page.window.scholarflowWorkspace.getState().documentId : null;
+}
+
+async function textIntegrityUnderDiagnostics() {
+  console.log("\n== Text integrity under diagnostics and refinement ==");
+  // execCommand is provided because the page prefers it in a real browser to
+  // keep the native undo stack; the automated path must be exercised too.
+  const page = await loadPage("/workspace", { execCommand: true });
+  const { window, document } = page;
+  const documentId = await newWorkspaceDocument(page, "Integrity passage");
+  check("a document could be created for the integrity checks", Boolean(documentId));
+
+  const editor = document.getElementById("editor");
+  type(window, document, CHECKLIST_PASSAGE);
+  let expected = CHECKLIST_PASSAGE;
+
+  const analysed = await waitFor(
+    () => window.scholarflowWorkspace.getState().diagnostics.count > 0,
+    9000,
+  );
+  const findings = window.scholarflowWorkspace.getState().diagnostics.findings;
+  check("the passage produces findings", analysed, `${findings.length} findings`);
+  check(
+    "running diagnostics does not change the document text",
+    editor.value === expected,
+    `${editor.value.length} characters`,
+  );
+  check(
+    "every finding's offsets slice to exactly its own original text",
+    findings.every((finding) => expected.slice(finding.start, finding.end) === finding.original),
+    findings
+      .filter((finding) => expected.slice(finding.start, finding.end) !== finding.original)
+      .map((finding) => finding.id)
+      .join(", "),
+  );
+  check(
+    "no finding points at an empty or reversed range",
+    findings.every(
+      (finding) =>
+        Number.isInteger(finding.start) &&
+        Number.isInteger(finding.end) &&
+        finding.end > finding.start,
+    ),
+  );
+  const markers = document.querySelectorAll("#marker-layer .marker");
+  check("markers are rendered", markers.length > 0, `${markers.length} markers`);
+
+  // --- accepting changes only the accepted range -------------------------
+  const spelling = findings.find((finding) => finding.id.startsWith("spelling.misspelling"));
+  if (spelling) {
+    const predicted = spliceText(expected, spelling.start, spelling.end, spelling.replacement);
+    window.scholarflowWorkspace.openSuggestion(spelling.id);
+    await sleep(150);
+    document.getElementById("suggestion-accept").click();
+    await sleep(500);
+    check(
+      "accepting a correction splices exactly its own range",
+      editor.value === predicted,
+      `${editor.value.length} vs ${predicted.length} characters`,
+    );
+    check(
+      "accepting keeps every other character byte-identical",
+      editor.value.slice(0, spelling.start) === expected.slice(0, spelling.start) &&
+        editor.value.slice(spelling.start + spelling.replacement.length) ===
+          expected.slice(spelling.end),
+    );
+    structureChecks("after an accept", editor.value);
+    expected = predicted;
+  } else {
+    check("a spelling finding was available to accept", false);
+  }
+
+  // --- dismissing changes nothing ----------------------------------------
+  await waitFor(() => window.scholarflowWorkspace.getState().diagnostics.count > 0, 9000);
+  const dismissible = window.scholarflowWorkspace
+    .getState()
+    .diagnostics.findings.find((finding) => finding.id !== spelling?.id);
+  if (dismissible) {
+    window.scholarflowWorkspace.openSuggestion(dismissible.id);
+    await sleep(150);
+    document.getElementById("suggestion-dismiss").click();
+    await sleep(300);
+    check("dismissing a suggestion leaves the text untouched", editor.value === expected);
+  }
+
+  // --- a stale suggestion is refused -------------------------------------
+  await waitFor(() => window.scholarflowWorkspace.getState().diagnostics.count > 0, 9000);
+  const stale = window.scholarflowWorkspace
+    .getState()
+    .diagnostics.findings.find((finding) => Boolean(finding.replacement));
+  if (stale) {
+    window.scholarflowWorkspace.openSuggestion(stale.id);
+    await sleep(150);
+    const at = expected.indexOf("There is many studies") + "There is ".length;
+    const typed = expected.slice(0, at) + "now " + expected.slice(at);
+    type(window, document, typed);
+    await sleep(250);
+    document.getElementById("suggestion-accept").click();
+    await sleep(500);
+    check(
+      "a suggestion whose text has moved is refused, not applied",
+      editor.value === typed,
+      `${editor.value.length} vs ${typed.length} characters`,
+    );
+    structureChecks("after the refusal", editor.value);
+    expected = typed;
+  } else {
+    check("a finding with a replacement was available for the stale check", false);
+  }
+
+  // --- saving must not wipe the analysis ---------------------------------
+  await waitFor(
+    () =>
+      window.scholarflowWorkspace.getState().diagnostics.count > 0 &&
+      !window.scholarflowWorkspace.getState().diagnostics.loading,
+    9000,
+  );
+  const beforeSave = window.scholarflowWorkspace.getState().diagnostics;
+  document.getElementById("save-document").click();
+  const savedState = await waitFor(
+    () => /Saved/.test(document.getElementById("save-state").textContent),
+    9000,
+  );
+  const afterSave = window.scholarflowWorkspace.getState().diagnostics;
+  check("saving reaches the saved state", savedState);
+  check(
+    "saving does not wipe the findings in the panel",
+    afterSave.count === beforeSave.count && afterSave.analysedText !== null,
+    `before=${beforeSave.count} after=${afterSave.count}`,
+  );
+  check("saving does not change the text", editor.value === expected);
+  structureChecks("after saving", editor.value);
+
+  // --- save and reopen ---------------------------------------------------
+  const stored = await serverDocument(documentId);
+  check("the stored document is byte-identical to the editor", stored.text === editor.value,
+    `${stored.text.length} vs ${editor.value.length} characters`);
+  const reopened = await loadPage("/workspace", { execCommand: true });
+  const opened = await waitFor(
+    () => reopened.window.scholarflowWorkspace?.getState().documentId === documentId,
+    9000,
+  );
+  check("reopening the workspace opens the saved document", opened);
+  const reopenedText = reopened.document.getElementById("editor").value;
+  check(
+    "the reopened document is byte-identical to what was saved",
+    reopenedText === expected,
+    `${reopenedText.length} vs ${expected.length} characters`,
+  );
+  structureChecks("after reopening", reopenedText);
+  check(
+    "the accepted correction survived the round trip",
+    reopenedText.includes("technique") && !reopenedText.includes("tehnique"),
+  );
+  reopened.window.close();
+
+  // --- typing before the application has finished loading ----------------
+  // A cold start reads the document list from disk. Somebody can already be
+  // writing in that window, and those words belong to no document yet.
+  const slowBoot = await loadPage("/workspace", { delayListMs: 1500, execCommand: true });
+  const earlyEditor = slowBoot.document.getElementById("editor");
+  const earlyText = "# Early paste\n\nWritten before the document list arrived.\n";
+  earlyEditor.value = earlyText;
+  earlyEditor.setSelectionRange(earlyText.length, earlyText.length);
+  earlyEditor.dispatchEvent(new slowBoot.window.Event("input", { bubbles: true }));
+  await sleep(3500);
+  check(
+    "text typed before the application finished loading is still there",
+    earlyEditor.value === earlyText,
+    `now ${JSON.stringify(earlyEditor.value.slice(0, 60))}`,
+  );
+  slowBoot.window.close();
+
+  // --- rapid typing while checks are in flight ---------------------------
+  const rapid = await loadPage("/workspace", { execCommand: true });
+  await newWorkspaceDocument(rapid, "Rapid typing");
+  const rapidEditor = rapid.document.getElementById("editor");
+  let rapidExpected = CHECKLIST_PASSAGE;
+  type(rapid.window, rapid.document, rapidExpected);
+  for (let round = 0; round < 8; round += 1) {
+    rapidExpected += " extra";
+    type(rapid.window, rapid.document, rapidExpected);
+    await sleep(140); // faster than the check debounce and the autosave timer
+  }
+  check("the burst of typing is in the editor", rapidEditor.value === rapidExpected);
+  await sleep(4500);
+  check(
+    "the burst of typing survives the checks and the autosave",
+    rapidEditor.value === rapidExpected,
+    `${rapidEditor.value.length} vs ${rapidExpected.length} characters`,
+  );
+  structureChecks("after rapid typing", rapidEditor.value);
+  const rapidId = rapid.window.scholarflowWorkspace.getState().documentId;
+  const rapidStored = await serverDocument(rapidId);
+  check(
+    "the stored document matches after rapid typing",
+    rapidStored.text === rapidExpected,
+    `${rapidStored.text.length} vs ${rapidExpected.length} characters`,
+  );
+  rapid.window.close();
+
+  // --- a randomised sequence, checked against an oracle ------------------
+  // Actions a person might take in any order. The probe keeps its own copy of
+  // what the text should be, so a duplicated paragraph, a reordered clause or a
+  // truncated tail fails the run with the action that caused it.
+  const mixed = await loadPage("/workspace", { execCommand: true });
+  const mixedId = await newWorkspaceDocument(mixed, "Mixed sequence");
+  const mixedEditor = mixed.document.getElementById("editor");
+  let oracle = CHECKLIST_PASSAGE;
+  type(mixed.window, mixed.document, oracle);
+  await waitFor(() => mixed.window.scholarflowWorkspace.getState().diagnostics.count > 0, 9000);
+
+  let seed = 20261015;
+  const random = () => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed / 2147483648;
+  };
+  let diverged = false;
+  for (let step = 0; step < 8 && !diverged; step += 1) {
+    const roll = random();
+    const diagnostics = mixed.window.scholarflowWorkspace.getState().diagnostics;
+    if (roll < 0.4) {
+      const candidates = diagnostics.findings.filter((finding) => Boolean(finding.replacement));
+      if (!candidates.length) continue;
+      const finding = candidates[Math.floor(random() * candidates.length) % candidates.length];
+      // The page must apply a finding only while it still describes the text at
+      // those characters. Model that rule: a finding from a superseded analysis
+      // must be refused, and then the document must not change at all.
+      const stillValid =
+        mixed.window.scholarflowWorkspace.getState().diagnostics.analysedText ===
+          mixedEditor.value && mixedEditor.value.slice(finding.start, finding.end) === finding.original;
+      mixed.window.scholarflowWorkspace.openSuggestion(finding.id);
+      await sleep(120);
+      const accept = mixed.document.getElementById("suggestion-accept");
+      if (mixed.document.getElementById("suggestion-card").hidden || accept.disabled) continue;
+      accept.click();
+      await sleep(450);
+      const predicted = stillValid
+        ? spliceText(oracle, finding.start, finding.end, finding.replacement)
+        : oracle;
+      check(
+        `random step ${step}: accepting ${finding.id.split("@")[0]} ${stillValid ? "splices only its range" : "is refused because the text moved"}`,
+        mixedEditor.value === predicted,
+        `${mixedEditor.value.length} vs ${predicted.length} characters`,
+      );
+      oracle = predicted;
+      diverged = mixedEditor.value !== oracle;
+    } else if (roll < 0.6) {
+      const finding = diagnostics.findings[Math.floor(random() * Math.max(1, diagnostics.findings.length))];
+      if (!finding) continue;
+      mixed.window.scholarflowWorkspace.openSuggestion(finding.id);
+      await sleep(120);
+      mixed.document.getElementById("suggestion-dismiss").click();
+      await sleep(250);
+      check(`random step ${step}: dismissing changes nothing`, mixedEditor.value === oracle);
+      diverged = mixedEditor.value !== oracle;
+    } else if (roll < 0.8) {
+      oracle += " further note";
+      type(mixed.window, mixed.document, oracle);
+      await sleep(200);
+      check(`random step ${step}: typing is preserved`, mixedEditor.value === oracle);
+      diverged = mixedEditor.value !== oracle;
+    } else {
+      mixed.document.getElementById("save-document").click();
+      await sleep(900);
+      check(`random step ${step}: saving changes nothing`, mixedEditor.value === oracle);
+      diverged = mixedEditor.value !== oracle;
+    }
+    await waitFor(
+      () =>
+        mixed.window.scholarflowWorkspace.getState().diagnostics.count > 0 ||
+        mixed.window.scholarflowWorkspace.getState().diagnostics.error,
+      6000,
+    );
+  }
+  structureChecks("after the randomised sequence", mixedEditor.value);
+  const mixedStored = await serverDocument(mixedId);
+  check("the stored document matches the oracle after the randomised sequence",
+    mixedStored.text === oracle,
+    `${mixedStored.text.length} vs ${oracle.length} characters`);
+  mixed.window.close();
+
+  return documentId;
+}
+
 async function main() {
   const health = await fetch(`${BASE}/health`).then((response) => response.json());
   check("live server is reachable", health.status === "ok", health.service);
@@ -1029,6 +1377,7 @@ async function main() {
   const documentId = await stage1Workspace();
   await stage2Diagnostics();
   await stage3Diagnostics();
+  await textIntegrityUnderDiagnostics();
   await quickEditorRefine();
 
   // The saved document is still on disk at the end of the run.
