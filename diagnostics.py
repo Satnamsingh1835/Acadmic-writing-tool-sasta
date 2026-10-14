@@ -34,6 +34,7 @@ import json
 import os
 import re
 import tempfile
+import sys
 import threading
 import unicodedata
 from dataclasses import dataclass, field
@@ -1567,7 +1568,7 @@ class DiagnosticEngine:
             if (start, end) in seen:
                 continue
             seen.add((start, end))
-            if any(span_start <= start < span_end for span_start, span_end in protected):
+            if _inside(start, protected):
                 continue
             if (start, end) in self._run.handled_spans:
                 # A contraction rule already explained this word.
@@ -1652,7 +1653,7 @@ class DiagnosticEngine:
 
     def _punctuation_rules(self, clean: str, protected, add) -> None:
         def inside_protected(start: int, end: int) -> bool:
-            return any(s <= start and end <= span_end for s, span_end in protected)
+            return _covers(start, end, protected)
 
         for match in re.finditer(r"[ \t]+([,.;:!?])", clean):
             punctuation = match.group(1)
@@ -1767,7 +1768,7 @@ class DiagnosticEngine:
         self, clean: str, protected, add, heading_segments: Sequence[tuple[int, int]] = ()
     ) -> None:
         def inside_protected(start: int, end: int) -> bool:
-            return any(s <= start and end <= span_end for s, span_end in protected)
+            return _covers(start, end, protected)
 
         for match in re.finditer(r"\bi\b", clean):
             if inside_protected(match.start(), match.end()):
@@ -1803,7 +1804,7 @@ class DiagnosticEngine:
             if not first or len(_WORD_RE.findall(sentence)) < 3:
                 continue
             letter = start + first.start()
-            if heading_segments and any(span_start <= letter < span_end for span_start, span_end in heading_segments):
+            if heading_segments and _inside(letter, heading_segments):
                 continue  # heading case is a layout choice, not a language error
             if inside_protected(letter, letter + 1):
                 continue
@@ -1863,7 +1864,7 @@ class DiagnosticEngine:
         for match in pattern.finditer(clean):
             article, following = match.group(1), match.group(2)
             start, end = match.start(1), match.start(1) + len(article)
-            if any(span_start <= start < span_end for span_start, span_end in protected):
+            if _inside(start, protected):
                 continue
             if looks_like_acronym(following):
                 # "an MBA", "a UN report": the letter does not tell you the sound.
@@ -1958,7 +1959,7 @@ class DiagnosticEngine:
         )
         for match in pattern.finditer(clean):
             start, end = match.start(1), match.end(1)
-            if any(span_start <= start < span_end for span_start, span_end in protected):
+            if _inside(start, protected):
                 continue
             add(
                 "clarity.ambiguous-this",
@@ -2385,13 +2386,32 @@ def _drop_contained(findings: Sequence[Diagnostic]) -> list[Diagnostic]:
     return kept
 
 
+def _span_index(position: int, spans: Sequence[tuple[int, int]]) -> int:
+    """Index of the span a position falls in, or -1.
+
+    ``spans`` is always the merged, sorted output of ``_merge_ranges`` (or a
+    filter of it, which keeps the order), so the answer comes from a binary
+    search. The rule loops ask this question once per word and once per
+    punctuation mark, and a document with thousands of citations used to make
+    that quadratic.
+    """
+    if not spans:
+        return -1
+    index = bisect.bisect_right(spans, (position, sys.maxsize)) - 1
+    if index >= 0 and spans[index][0] <= position < spans[index][1]:
+        return index
+    return -1
+
+
+def _covers(start: int, end: int, spans: Sequence[tuple[int, int]]) -> bool:
+    """True when one span contains the whole range ``start``–``end``."""
+    index = _span_index(start, spans)
+    return index >= 0 and spans[index][1] >= end
+
+
 def _inside(position: int, spans: Sequence[tuple[int, int]]) -> bool:
-    for start, end in spans:
-        if start > position:
-            return False
-        if start <= position < end:
-            return True
-    return False
+    """True when the position falls inside one of the protected spans."""
+    return _span_index(position, spans) >= 0
 
 
 def _looks_like_abbreviation(clean: str, position: int) -> bool:
@@ -2581,7 +2601,7 @@ def _comma_splice(
     if not commas:
         return None
     for position in commas:
-        if any(start <= position < end for start, end in protected):
+        if _inside(position, protected):
             continue  # a comma inside a citation (Gupta, 2000; Rao, 2011) is not a splice
         left = sentence[:position]
         right = sentence[position + 1:]
