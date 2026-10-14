@@ -82,9 +82,172 @@ reference list) is *masked*: findings are only reported on the prose view, and
 every range is mapped back through the view's segment table before it leaves the
 engine, so a finding can never point at a character it did not inspect.
 
-## 4. Verification
+## 4. Architecture and data flow
 
-Unit tests per rule, API tests for the endpoints and their privacy guarantees,
-DOM checks for the interface, the packaged smoke gate, and the Windows procedure
-in `docs/WINDOWS_DIAGNOSTICS_TEST.md`. Results are recorded in section 6 as they
-are produced; a result is only written down once it has actually been observed.
+```
+  textarea (#editor)                    marker mirror + layer
+        │  input                                          ▲ positioned markers
+        ▼                                                 │ (measured from the mirror)
+   markDirty() ──► scheduleAnalysis(700 ms debounce) ─────┤
+        │                                                 │
+        │ POST /api/workspace/diagnostics                 │
+        │   {text, document_id, revision, profile}        │
+        ▼                                                 │
+  api.workspace_diagnostics ──► DiagnosticEngine.analyse ─┘
+        │                        (deterministic, local)
+        │  mask → prose view → rules → findings (offsets in the
+        │  caller's own string) → counts, metrics, notes
+        ▼
+  editor state: findings, counts, categories, metrics, notes
+        │
+        ├─► renderMarkers()          one per range, focusable, labelled
+        ├─► renderDiagnosticsPanel() sidebar grouped by category, filters, totals
+        └─► anchored suggestion pop-up (Accept / Dismiss / alternatives)
+
+  Accept ──► validate (analysed text unchanged AND the characters at those
+             offsets still equal `original`) ──► applyEdit() ──► re-analyse
+  Dismiss ─► remember the finding id per document; the text is not touched
+```
+
+The engine is a pure function of (text, profile, categories): it reads no
+document store, contacts no service, and the API tests assert that a check
+cannot change a stored document. The editor keeps its own text; a finding is
+only ever data about that text, which is what makes "never silently rewrite"
+checkable rather than a promise.
+
+**Markdown and offsets.** `_Mask` marks fenced code, inline code, YAML front
+matter, link targets and the reference list; `_ViewBuilder` then produces the
+prose with structural markers (heading hashes, bullets, quote markers, table
+pipes) removed while keeping a segment table back to the original indices.
+Findings are reported in the caller's string, so `text[start:end] == original`
+always holds — that identity is asserted in the unit tests, in the API tests and
+in the GUI checks, and the packaged smoke gate re-checks it inside the Windows
+build.
+
+**Rule families (32 rules).**
+
+| Group | Rules | Kind |
+|---|---|---|
+| Spelling | `spelling.misspelling`, `spelling.unknown-word` | error |
+| Grammar | `agreement.plural-subject`, `agreement.indefinite-pronoun`, `agreement.latin-plural-convention`, `agreement.demonstrative`, `agreement.article-with-plural`, `grammar.article-an`, `grammar.mass-noun-plural`, `grammar.redundant-preposition` | error (`agreement.latin-plural-convention` is style) |
+| Punctuation | `punctuation.missing-space`, `punctuation.space-before-mark`, `punctuation.doubled-mark`, `punctuation.unclosed-bracket`, `punctuation.unmatched-bracket`, `punctuation.missing-apostrophe` | error |
+| Capitalisation | `capitalization.sentence-start`, `capitalization.pronoun-i`, `capitalization.proper-adjective` | error |
+| Sentence structure | `fragment.no-main-clause`, `run_on.comma-splice` | error, medium confidence |
+| Clarity | `readability.long-sentence`, `readability.long-paragraph`, `clarity.ambiguous-this` | style |
+| Concision | `wordiness.longer-phrase`, `wordiness.formulaic-opener` | style |
+| Academic style | `tone.contraction`, `tone.vague-quantifier`, `tone.overclaim` | style |
+| Repetition | `repetition.immediate`, `repetition.overused-word`, `repetition.overused-phrase` | style |
+
+## 5. Academic profiles
+
+| Profile | Style categories reported | Length thresholds | Rule |
+|---|---|---|---|
+| Academic Standard | clarity, concision, academic style, repetition | 35-word sentences, 220-word paragraphs | `academic_standard` |
+| Formal Academic Writing | clarity, academic style, repetition | 45-word sentences (formal prose is allowed to run longer) | `formal_academic` |
+| Concise Academic Writing | clarity, concision, repetition | 28-word sentences, 170-word paragraphs | `concise_academic` |
+
+Spelling and every reliable grammar, punctuation and capitalisation rule run in
+all three; the tests assert that, and the profile is returned in the report so a
+client can show what was actually checked. A profile only chooses findings and
+their sidebar priority — the response carries the same `text_sha256` whichever
+profile produced it, which is the machine-checkable form of "a profile never
+rewrites the text".
+
+## 6. Dependency and licence decisions
+
+`pyspellchecker` 0.8.2 (MIT) provides the English dictionary and the frequency
+table used to rank candidates. It is pure Python, works offline, ships its
+dictionary as package data (`resources/en.json.gz`, ~650 KB), and PyInstaller
+collects it through `collect_all("spellchecker")`; the packaged smoke gate fails
+if the frozen build cannot load it. The MIT notice is vendored in
+`packaging/third_party/pyspellchecker-LICENSE.txt`, shipped inside the build, and
+listed with every other dependency in `THIRD_PARTY_NOTICES.md`.
+
+Rejected for the reasons recorded in `docs/WRITING_WORKSPACE_PLAN.md` §3:
+LanguageTool needs a Java process and LGPL relinking obligations in a frozen
+build; Harper needs a Rust toolchain; cloud grammar services are never used.
+
+## 7. Privacy and offline behaviour
+
+Every rule is deterministic Python, the dictionary is bundled, and analysis is a
+pure function of the text. The response states `external_services: "none"` and
+the engine name and versions; the interface repeats the promise next to the
+results. Nothing is logged: the request model deliberately has no `max_length`
+on `text`, because a pydantic validation error would echo a snippet of the
+document back in the error body (a test pins this). The personal dictionary is
+plain JSON in the user's data directory and dismissals are a per-document list
+in `localStorage`; neither is uploaded anywhere.
+
+## 8. Test commands and results
+
+```
+python -m pytest -q                                   # 282 passed
+python -m tools.repository_check                      # 166 files, 0 failures
+python -m flake8 . --count --select=E9,F63,F7,F82      # clean
+node tests/gui/workspace_dom_check.mjs http://127.0.0.1:8800
+                                                      # GUI RESULT: PASS (130/130), twice
+python desktop_app.py --smoke-test --smoke-report <f>  # 58 PASS / 0 FAIL
+```
+
+Measured analysis time on this machine (single analysis, warm dictionary):
+
+| Document | Characters | Time | Findings |
+|---|---|---|---|
+| Short section | 176 | <1 ms after warm-up | 3 |
+| Article | 7,040 | 19 ms | 268 |
+| Long article | 70,400 | 217 ms | 600 (capped) |
+| Adversarial: 20,000 unknown words | 99,999 | 236 ms | 247 |
+| Adversarial: 20,000 repeated typos | 79,999 | 198 ms | 243 |
+| Adversarial: 5,000 citations | 69,999 | 253 ms | 15 |
+| Plan document | 11,216 | 44 ms | 113 |
+
+Two performance defects were found and fixed by these measurements: the mask
+lookup walked every masked range for every character (160 ms → 51 ms on an
+11k document, 1.7 s → 475 ms on 112k), and the protected-span lookup walked
+every citation for every word (1.6 s → 253 ms on a citation-dense document).
+
+## 9. Known false positives and honest limitations
+
+- **Sentence-initial capitalised words with a candidate** are reported at
+  `medium` confidence, because "Teh" could in principle be a name. A capitalised
+  unknown word with *no* candidate is not reported at all: flagging every
+  unfamiliar proper noun is how a checker loses a writer.
+- **Names are protected structurally**, not by a complete list: a word the
+  author capitalises away from a sentence start anywhere in the document is
+  treated as a proper noun. A surname that only ever appears at a sentence start
+  and has no dictionary neighbour is silently ignored, which is deliberate.
+- **The bundle is not an ontology.** `diagnostic_lexicon.py` is a curated start
+  (names, caste and community terms, places, field concepts, survey
+  abbreviations, ~1,170 words). The personal dictionary remains the way to
+  protect the exact vocabulary of a project.
+- **US-English dictionary.** British spellings are accepted through variant
+  rules. Words in other scripts are not checked, because the dictionary is
+  English; they are never reported as misspellings.
+- **Fragment, run-on and agreement rules are heuristic** and reported at medium
+  confidence. `agreement.latin-plural-convention` ("the data is") is a style
+  option, not an error, because both conventions are in use.
+- **Mass-noun and preposition rules are deliberately tiny.** "researches",
+  "trainings" and "evidences" are ordinary in Indian and legal English and are
+  not flagged.
+- **Spelling stops examining a document** after the per-rule cap is reached plus
+  40 further unknown words with no finding; the report says so through
+  `truncated` and a note, rather than quietly returning a partial list.
+- **Marker pixel alignment is not verified by the automated checks.** jsdom has
+  no layout engine, so the DOM checks verify marker identity, labels, ordering and
+  behaviour, and the anchoring maths is verified against a *stubbed* layout. Real
+  alignment needs WebView2 — see `docs/WINDOWS_DIAGNOSTICS_TEST.md`.
+- **Undo after an accepted correction** goes through
+  `document.execCommand("insertText")`, which is what keeps the browser's own undo
+  history. The DOM checks verify that the page selects the finding's exact range
+  and hands over the exact text, using a stand-in for the command; whether the
+  browser then undoes it is a WebView2 behaviour that has to be seen on Windows.
+
+## 10. Deferred work
+
+- Spell-checking words in other scripts, and an Indian-English variant dictionary.
+- Grammar rules that need a parser (articles in complex noun phrases, tense and
+  agreement across subordinate clauses).
+- Per-change bulk review with receipts (Stage 4 in the workspace plan) and the
+  optional, consent-gated AI pass.
+- A style-guide selector (Chicago, APA, journal-specific) for punctuation rules.
+- Native automated GUI verification on Windows (see the procedure document).

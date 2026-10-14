@@ -36,6 +36,19 @@ that can be verified end-to-end in the repository's automated GUI harness. If
 in-canvas marker rendering becomes the limiting factor, CodeMirror 6 is the
 planned upgrade, and the diagnostics API (text + offsets) would not change.
 
+**Re-evaluated after stage 3 (when the markers, the anchored pop-up and the
+profile picker were in place): the textarea stays.** The three things that would
+have justified CodeMirror 6 were in-canvas rendering, decoration management and
+viewport performance. Markers over a measured mirror cover the first two without
+a bundler, a vendored bundle or a second text model, and the viewport cost is
+bounded because the marker layer is rebuilt from the visible findings rather than
+per character. Two costs of staying are real and recorded: programmatic edits
+must go through `document.execCommand("insertText")` to keep the browser's undo
+history (a framework would own the history itself), and marker alignment depends
+on the mirror sharing the textarea's metrics exactly, which the CSS documents.
+Migrating later remains open, because nothing in the diagnostics contract — text
+plus offsets — is specific to the editing surface.
+
 ## 3. Grammar engine evaluation
 
 | Engine | Licence | Offline | Fit | Verdict |
@@ -73,11 +86,17 @@ and *style* (wordiness, repetition, readability, tone) so a stylistic preference
 is never presented as an error; the one convention-based agreement rule
 ("data is") is deliberately reported as style, not as an error.
 
-**Stage 3 — inline suggestions.** Clicking a marker opens a pop-up anchored to
-the range with the original text, proposed correction, category, explanation,
-Accept, Dismiss and alternatives. Acceptance applies at the stored offsets and is
-refused if the text at those offsets changed (stale guard). Sidebar with totals,
-grouping and next/previous navigation.
+**Stage 3 — inline suggestions (implemented).** Clicking a marker opens a pop-up
+anchored to the range with the original text, proposed correction, category and
+group, explanation, confidence, rule id and version, Accept, Dismiss and
+alternatives. Acceptance applies at the stored offsets and is refused if the text
+at those offsets changed (stale guard). The sidebar groups findings by category
+with counts, a plain total, error/style filters and next/previous navigation.
+Three academic profiles (Academic Standard, Formal Academic Writing, Concise
+Academic Writing) enable, withhold and reprioritise the optional style rules;
+spelling and the reliable grammar rules run in all of them. See
+`docs/STAGE3_INLINE_DIAGNOSTICS_PLAN.md` for the rules, the assembly, the
+measurements and the false positives.
 
 **Stage 4 — academic enhancements.** Profiles (Academic standard, Concise,
 Formal/minimal), terminology and citation preservation checks, quotation
@@ -102,8 +121,26 @@ keep the GUI harness in CI.
   privacy guarantees, and DOM-level checks for markers, the sidebar, filters,
   navigation, Accept/Dismiss/stale handling, the dictionary and the failure
   surfaces.
+- Stage 3 adds rule tests for the new families, tests for the profile contract
+  and its "never rewrites the text" invariant, performance budgets for long and
+  adversarial documents, failure-mode tests for a missing dictionary, and DOM
+  checks for the total, the profile effects, the anchored pop-up (against a
+  stubbed layout), the exact range handed to `document.execCommand`, autosave
+  races and save/reopen integrity.
 
-## 6. Known limitations after Stage 2
+## 6. Known limitations after Stage 3
+
+- Spelling is US-English with British variants accepted; other scripts are not
+  checked, and the protected-vocabulary list is a curated start rather than a
+  complete ontology (see section 9 of `docs/STAGE3_INLINE_DIAGNOSTICS_PLAN.md`).
+- Fragment, run-on and part-of-agreement findings are heuristic and stay at
+  medium confidence; profiles change which style rules run, never the text.
+- Marker pixel alignment and the browser's own undo after an accepted correction
+  are verified against stubbed measurements in the automated checks; a real
+  rendering engine is needed to observe them (see
+  `docs/WINDOWS_DIAGNOSTICS_TEST.md`).
+
+## 7. Known limitations after Stage 2 (kept for the record)
 
 - The bundled dictionary is US-English; British spellings are accepted through
   the variant rules in `diagnostics.py`, and field terms go in the personal
