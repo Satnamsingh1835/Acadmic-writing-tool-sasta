@@ -22,6 +22,14 @@ const require = createRequire(import.meta.url);
 const { JSDOM, VirtualConsole } = require("jsdom");
 
 const BASE = (process.argv[2] || "http://127.0.0.1:8000").replace(/\/$/, "");
+// The random walk is deterministic per seed. Several seeds can be given as a
+// third argument ("1 2 3"); the default is the seed the checks were written
+// against, so the plain invocation stays reproducible.
+const LIFECYCLE_SEEDS = (process.argv[3] || "20261016")
+  .split(/\s+/)
+  .filter(Boolean)
+  .map(Number)
+  .filter((seed) => Number.isFinite(seed));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let failures = 0;
@@ -47,6 +55,8 @@ async function loadPage(
     degradeSpelling = false,
     execCommand = null,
     delayListMs = 0,
+    delayResponses = null,
+    recordWrites = false,
   } = {},
 ) {
   const errors = [];
@@ -67,8 +77,34 @@ async function loadPage(
           JSON.stringify({ text: seedDraft.text, title: seedDraft.title, baseRevision: 1 }),
         );
       }
+      if (recordWrites) {
+        // What the page actually sent, so a check can tell "the write happened"
+        // from "the text eventually reached the store through an autosave".
+        window.__writes = [];
+      }
       window.fetch = async (input, options) => {
+        if (recordWrites && ((options && options.method) || "GET").toUpperCase() === "PUT") {
+          try {
+            const body = JSON.parse(options.body);
+            window.__writes.push({ reason: body.reason, text: body.text });
+          } catch {
+            window.__writes.push({ reason: null, text: null });
+          }
+        }
         if (offline) return Promise.reject(new TypeError("Failed to fetch"));
+        if (delayResponses) {
+          // Send the request, then hold the RESPONSE back. That is what a slow
+          // disk looks like: the server has already committed the write.
+          const method = ((options && options.method) || "GET").toUpperCase();
+          const held = delayResponses.find(
+            (entry) => entry.method === method && new RegExp(entry.pattern).test(String(input)),
+          );
+          if (held) {
+            const response = await fetch(new URL(String(input), BASE).href, options);
+            await sleep(held.ms);
+            return response;
+          }
+        }
         if (delayListMs && /\/api\/documents(\?|$)/.test(String(input))) {
           // A cold start on a real machine reads the list from disk; delaying it
           // here reproduces the moment when somebody is already typing.
@@ -138,6 +174,19 @@ function type(window, document, text) {
   editor.value = text;
   editor.setSelectionRange(text.length, text.length);
   editor.dispatchEvent(new window.Event("input", { bubbles: true }));
+}
+
+/* Press Save, then wait for the write to land. A save issued while another
+ * write is in flight is deferred until that one finishes, so "the store has it
+ * yet" is the wrong question to ask immediately afterwards. */
+async function saveAndSettle(window, reason = "manual", timeout = 12000) {
+  await window.scholarflowWorkspace.save(reason);
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (!window.scholarflowWorkspace.getState().dirty) return true;
+    await sleep(150);
+  }
+  return false;
 }
 
 async function waitFor(predicate, timeout = 6000, interval = 100) {
@@ -1088,6 +1137,1175 @@ async function newWorkspaceDocument(page, title) {
   return created ? page.window.scholarflowWorkspace.getState().documentId : null;
 }
 
+
+/* The document lifecycle under in-flight requests.
+ *
+ * Every check in this stage corresponds to a defect that was reproduced in a
+ * DOM against the page as it was. They are about which document a response
+ * belongs to: adopting a response for a document the person has left, or
+ * writing the open document's text into another document's file, are the ways a
+ * local-first editor destroys somebody's writing.
+ */
+async function documentIdentityUnderInFlightRequests() {
+  console.log("\n== Document identity under in-flight requests ==");
+
+  // ---------------------------------------------------------------- setup
+  const suffix = Date.now().toString(36).slice(-5);
+  const titleA = `Identity A ${suffix}`;
+  const titleB = `Identity B ${suffix}`;
+  const docA = await (
+    await fetch(`${BASE}/api/documents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: titleA, text: "AAA original text.\n" }),
+    })
+  ).json();
+  const docB = await (
+    await fetch(`${BASE}/api/documents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: titleB, text: "BBB original text.\n" }),
+    })
+  ).json();
+  check("two documents exist for the identity checks", Boolean(docA.id && docB.id));
+
+  const openRow = (page, title) =>
+    [...page.document.querySelectorAll("#document-list button.list-item")].find((button) =>
+      button.textContent.includes(title),
+    );
+
+  // ------------------------------------------- a late load is not adopted
+  // Click one document, then another, before the first has answered. The
+  // response for the abandoned one must be dropped, not shown.
+  {
+    const page = await loadPage("/workspace", {
+      delayResponses: [{ method: "GET", pattern: `/api/documents/${docA.id}$`, ms: 2500 }],
+    });
+    const rowA = openRow(page, titleA);
+    const rowB = openRow(page, titleB);
+    check("both documents are listed in the sidebar", Boolean(rowA && rowB));
+    rowA.click();
+    await sleep(150);
+    rowB.click();
+    const selected = await waitFor(
+      () => page.window.scholarflowWorkspace.getState().documentId === docB.id,
+      5000,
+    );
+    check("clicking the second document opens it", selected);
+
+    const typed = "BBB original text.\nTyped in B while A was still loading.\n";
+    type(page.window, page.document, typed);
+    await sleep(3500); // A's response lands in here
+
+    const editor = page.document.getElementById("editor");
+    check(
+      "a late response for an abandoned document does not replace the text",
+      editor.value === typed,
+      `editor holds ${JSON.stringify(editor.value.slice(0, 48))}`,
+    );
+    check(
+      "the abandoned document does not become the selected one",
+      page.window.scholarflowWorkspace.getState().documentId === docB.id,
+    );
+    page.window.close();
+  }
+
+  // ------------------------------- a late save response is not adopted, and
+  //                    the editor's text never lands in another document
+  // The defect: type in A, let the autosave start, switch to B, type — A's
+  // response re-adopted A while the editor held B's text, and the next autosave
+  // wrote B's text into A, destroying A.
+  {
+    const page = await loadPage("/workspace", {
+      // Only A's writes are slow, so its response arrives after the switch.
+      delayResponses: [{ method: "PUT", pattern: `/api/documents/${docA.id}$`, ms: 3000 }],
+    });
+    openRow(page, titleA).click();
+    await waitFor(() => page.window.scholarflowWorkspace.getState().documentId === docA.id, 5000);
+
+    const editor = page.document.getElementById("editor");
+    const typedInA = "AAA original text.\nEdited in A, and this must stay in A.\n";
+    type(page.window, page.document, typedInA);
+    await sleep(2800); // A's autosave is now in flight
+
+    openRow(page, titleB).click();
+    const switched = await waitFor(
+      () => page.window.scholarflowWorkspace.getState().documentId === docB.id,
+      5000,
+    );
+    check("switching to the second document while A is saving works", switched);
+
+    const typedInB = editor.value + "Added while in B.\n";
+    type(page.window, page.document, typedInB);
+
+    // Let A's response land, then let whatever it triggers run.
+    await sleep(7000);
+
+    const storedA = await serverDocument(docA.id);
+    const storedB = await serverDocument(docB.id);
+    check(
+      "A still holds A's text",
+      storedA.text.includes("Edited in A") && !storedA.text.includes("Added while in B"),
+      JSON.stringify(storedA.text.slice(0, 60)),
+    );
+    check(
+      "B still holds B's text",
+      storedB.text.includes("Added while in B") && !storedB.text.includes("Edited in A"),
+      JSON.stringify(storedB.text.slice(0, 60)),
+    );
+    check(
+      "the late save response did not re-select the document being saved",
+      page.window.scholarflowWorkspace.getState().documentId === docB.id,
+      `selected ${page.window.scholarflowWorkspace.getState().documentId}`,
+    );
+    check(
+      "the editor still shows the document the person is in",
+      editor.value === typedInB,
+      `editor holds ${JSON.stringify(editor.value.slice(0, 40))}`,
+    );
+    page.window.close();
+  }
+
+  // ---------------------------- restoring a revision with unsaved edits asks
+  {
+    const page = await loadPage("/workspace");
+    const mine = await (
+      await fetch(`${BASE}/api/documents`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: `Restore ${suffix}`, text: "Revision one text.\n" }),
+      })
+    ).json();
+    await fetch(`${BASE}/api/documents/${mine.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "Revision two text.\n", reason: "manual" }),
+    });
+    // A fresh page load, so the sidebar really lists the new document.
+    const fresh = await loadPage("/workspace");
+    page.window.close();
+    const row = [...fresh.document.querySelectorAll("#document-list button.list-item")].find(
+      (button) => button.textContent.includes(`Restore ${suffix}`),
+    );
+    check("the restore-probe document is listed", Boolean(row));
+    if (row) {
+      row.click();
+      await waitFor(() => fresh.window.scholarflowWorkspace.getState().documentId === mine.id, 5000);
+      const unsaved = "Revision two text.\nUnsaved paragraph that exists only in this window.\n";
+      type(fresh.window, fresh.document, unsaved);
+      await sleep(200);
+      // A confirm() stand-in that records the question it was asked.
+      let asked = "";
+      fresh.window.confirm = (message) => {
+        asked = String(message);
+        return true;
+      };
+      const restore = [...fresh.document.querySelectorAll("#history button")].find((button) =>
+        /Restore this revision/.test(button.textContent),
+      );
+      check("a revision is offered for restore", Boolean(restore));
+      if (restore) {
+        restore.click();
+        await sleep(1500);
+        check(
+          "restoring over unsaved edits asks first and says they can be recovered",
+          /unsaved edits/i.test(asked) && /recover/i.test(asked),
+          `confirm said ${JSON.stringify(asked.slice(0, 70))}`,
+        );
+        check(
+          "the unsaved text is still offered back after the restore",
+          fresh.document.getElementById("recovery-banner").hidden === false,
+        );
+      }
+    }
+    fresh.window.close();
+  }
+
+  return { docA, docB };
+}
+
+/* ------------------------------------------------------------------ oracle
+ *
+ * Every case is compared in full, three ways: what the API stored when the
+ * document was created, what the editor shows when the document is opened, and
+ * what the API stores after an edit containing the same representations again.
+ *
+ * The store states its canonical form itself (`NFC` and `LF`), so the expected
+ * value is derived from the case text, never from what the application
+ * happened to produce.
+ */
+const REPRESENTATION_CASES = [
+  {
+    name: "plain ASCII",
+    text:
+      "A plain ASCII paragraph with commas, semicolons; and 100% of the numbers 0123456789.\n" +
+      "\nSecond paragraph, no trailing newline here",
+  },
+  {
+    name: "accented Latin, dashes and curly quotes",
+    text: "Caf\u00e9 \u2014 na\u00efve, co\u00f6perate, \u00f1o\u00f1o; en dash \u2013, ellipsis \u2026, \u201ccurly\u201d and \u2018single\u2019 quotes.\n",
+  },
+  {
+    name: "Gurmukhi",
+    text:
+      "\u0a2a\u0a70\u0a1c\u0a3e\u0a2c\u0a40 \u0a35\u0a3f\u0a71\u0a1a \u0a32\u0a3f\u0a16\u0a3f\u0a06 \u0a07\u0a71\u0a15 \u0a2a\u0a48\u0a30\u0a3e\u0964\n" +
+      "\u0a26\u0a42\u0a1c\u0a3e \u0a2a\u0a48\u0a30\u0a3e: \u0a35\u0a3f\u0a30\u0a3e\u0a2e \u0a1a\u0a3f\u0a70\u0a28\u0a39, \u0a05\u0a24\u0a47 \u0a38\u0a70\u0a16\u0a3f\u0a06\u0a35\u0a3e\u0a02 \u0a67\u0a68\u0a69\u0a6a\u0964\n",
+  },
+  {
+    name: "emoji, flags and ZWJ sequences",
+    text: "Ordinary text with an emoji \ud83d\ude42, a flag \ud83c\uddee\ud83c\uddf3 and a family \ud83d\udc69\u200d\ud83d\udc69\u200d\ud83d\udc67 in it.\n",
+  },
+  {
+    name: "combining marks, RTL and Devanagari",
+    text:
+      "Decomposed: e\u0301 a\u0308 n\u0303 \u2014 Hebrew \u05e9\u05dc\u05d5\u05dd, Arabic \u0645\u0631\u062d\u0628\u0627, Devanagari \u0939\u093f\u0928\u094d\u0926\u0940\u0964\n",
+  },
+  { name: "CRLF line endings", text: "First line.\r\nSecond line.\r\nThird line.\r\n" },
+  { name: "blank lines and a trailing newline", text: "Alpha.\n\n\nBeta.\n\nGamma.\n" },
+  {
+    name: "tabs, trailing spaces and no final newline",
+    text: "Alpha.\tTabbed column.\nTrailing spaces here.   \nNo final newline",
+  },
+  {
+    name: "Markdown",
+    text: "# Heading\n\n- item one\n- item two\n\n> quote\n\n**bold**, *italic* and `code`.\n",
+  },
+  {
+    name: "repeated phrases",
+    text: "The same phrase. The same phrase. The same phrase repeats, and in order to test in order to test, a number of a number of.\n",
+  },
+  { name: "an empty document", text: "" },
+  {
+    name: "a long passage",
+    text: Array.from(
+      { length: 40 },
+      (_, index) =>
+        `Paragraph ${index + 1}: a sentence that is long enough to be a real sentence, with a comma, and a following clause; then a number ${index + 1}0 and a Gurmukhi word \u0a38\u0a2b\u0a32\u0a24\u0a3e.\n`,
+    ).join("\n"),
+  },
+];
+
+/* The store states its canonical form: NFC, and CRLF folded to LF. The browser
+ * does the same folding in a textarea, so this is the expected value for both
+ * the editor and the API. When the application produces anything else, that is
+ * a difference in the text and this comparison shows it in full. */
+function canonical(text) {
+  return text.replace(/\r\n/g, "\n").normalize("NFC");
+}
+
+async function apiCreateDocument(title, body) {
+  const response = await fetch(`${BASE}/api/documents`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title, text: body }),
+  });
+  return response.json();
+}
+
+const EMPTY = () => ({});
+
+/* ------------------------------------------------------------- emoji offsets
+ *
+ * The engine counts characters; the browser counts UTF-16 code units. In a
+ * document with an emoji the two differ, and every correction at or after the
+ * emoji points at the wrong characters. The whole text is compared here: the
+ * characters the interface highlights, and the exact text after accepting a
+ * correction that comes after the emoji.
+ */
+async function emojiOffsetsDoNotBreakCorrections() {
+  console.log("\n== Corrections in a document that contains an emoji ==");
+  const text =
+    "The tehnique \u{1F642} used here is the analysys of caste, and the evidence dont support it.\n" +
+    "A second line \u{1F642} with a repeated word the the same the the word.\n";
+  const title = `Emoji offsets ${Date.now().toString(36).slice(-5)}`;
+  const created = await apiCreateDocument(title, text);
+
+  const page = await loadPage("/workspace");
+  const { window, document } = page;
+  const editor = document.getElementById("editor");
+  const row = [...document.querySelectorAll("#document-list button.list-item")].find((button) =>
+    button.textContent.includes(title),
+  );
+  check("the emoji document is listed", Boolean(row));
+  if (!row) {
+    window.close();
+    return;
+  }
+  row.click();
+  await waitFor(() => window.scholarflowWorkspace.getState().documentId === created.id, 6000);
+  // Let the page's own start-up open settle, then type a real edit. (Typing the
+  // stored text verbatim would instead exercise the "redundant open ends the
+  // pending check" case, which has its own stage below.)
+  await sleep(800);
+  const edited = `${text}A sentence typed after opening the document.\n`;
+  type(window, document, edited);
+  const expectedText = edited;
+
+  const analysed = await waitFor(
+    () => {
+      const state = window.scholarflowWorkspace.getState();
+      return state.diagnostics.count > 0 && state.diagnostics.analysedText === expectedText;
+    },
+    12000,
+  );
+  const findings = window.scholarflowWorkspace.getState().diagnostics.findings.filter(
+    (finding) => finding.original,
+  );
+  const analysisState = window.scholarflowWorkspace.getState();
+  check(
+    "an emoji document produces findings",
+    analysed && findings.length > 0,
+    `${findings.length} findings; analysed=${analysed}; open=${analysisState.documentId === created.id}; ` +
+      `requests=${analysisState.diagnostics.requests} checks=${analysisState.diagnostics.checks} ` +
+      `loading=${analysisState.diagnostics.loading} error=${JSON.stringify(analysisState.diagnostics.error)} ` +
+      `editor=${editor.value.length} characters; analysedText=${analysisState.diagnostics.analysedText ? analysisState.diagnostics.analysedText.length : "none"}; ` +
+      `scheduleAnalysis=${typeof window.scheduleAnalysis}; pageErrors=${JSON.stringify(page.errors.join(" | ").slice(0, 200))}; ` +
+      `mirror=${Boolean(document.getElementById("marker-mirror"))}`,
+  );
+
+  const shifted = findings.filter((finding) => editor.value.slice(finding.start, finding.end) !== finding.original);
+  check(
+    "every finding's offsets select exactly the text it names",
+    findings.length > 0 && shifted.length === 0,
+    shifted
+      .slice(0, 3)
+      .map(
+        (finding) =>
+          `${finding.id} covers ${JSON.stringify(editor.value.slice(finding.start, finding.end))} ` +
+          `instead of ${JSON.stringify(finding.original)}`,
+      )
+      .join(" | "),
+  );
+
+  // The interface draws a highlight over the flagged characters; that highlight
+  // is what a person sees, so compare it too.
+  const spans = [...document.querySelectorAll("#marker-mirror .marker-span")];
+  const wrongSpans = spans.filter((span) => {
+    const finding = findings.find((item) => item.id === span.dataset.id);
+    return finding ? span.textContent !== finding.original : false;
+  });
+  check(
+    "the highlight over the text covers exactly the flagged characters",
+    spans.length > 0 && wrongSpans.length === 0,
+    wrongSpans
+      .slice(0, 3)
+      .map((span) => `${JSON.stringify(span.textContent)} for ${span.dataset.id}`)
+      .join(" | "),
+  );
+
+  // Correct the misspelling that comes after the emoji.
+  const spelling = findings.find((finding) => finding.original === "analysys");
+  check(
+    "the misspelling after the emoji is offered with its correction",
+    Boolean(spelling && spelling.replacement === "analysis"),
+    spelling ? `[${spelling.start},${spelling.end}) -> ${spelling.replacement}` : "not offered",
+  );
+  if (spelling) {
+    const predicted = spliceText(expectedText, spelling.start, spelling.end, spelling.replacement);
+    window.scholarflowWorkspace.openSuggestion(spelling.id);
+    await sleep(150);
+    document.getElementById("suggestion-accept").click();
+    await sleep(600);
+    check(
+      "accepting it changes exactly that word and nothing else",
+      editor.value === predicted,
+      editor.value === predicted
+        ? ""
+        : `${editor.value.length} characters instead of ${predicted.length}: ` +
+          firstDifference(editor.value, predicted),
+    );
+    check(
+      "the emoji and the second line are untouched",
+      editor.value.includes("\u{1F642} used here is the analysis of caste") &&
+        editor.value.includes("A second line \u{1F642}"),
+    );
+    const stored = await saveAndSettle(window).then(() => serverDocument(created.id));
+    check(
+      "the corrected text is stored exactly as typed",
+      stored.text === predicted,
+      stored.text === predicted ? "" : firstDifference(stored.text, predicted),
+    );
+    check(
+      "no half of the emoji was left behind",
+      !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(editor.value) &&
+        !/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(editor.value),
+    );
+  }
+
+  window.close();
+}
+
+/* --------------------------------------------- honest empty diagnostics panel
+ *
+ * Reproduced: with a check pending, opening the same document again (clicking the
+ * row of the document that is already open, or the start-up open racing with a
+ * click) ends that pending check. The panel then said "No findings. Your text
+ * passed every local rule for the categories checked." and "No issues found in
+ * this document." — a claim about text nobody had checked. No text is lost; the
+ * defect is the claim. This stage pins the claim, and pins that typing once more
+ * does check the text.
+ */
+async function aCancelledCheckIsNotReportedAsClean() {
+  console.log("\n== A document that has not been checked is not reported as clean ==");
+  const text = "This one has a tehnique in it and the evidence dont support it.\n";
+  const title = `Unchecked ${Date.now().toString(36).slice(-5)}`;
+  const created = await apiCreateDocument(title, text);
+
+  const page = await loadPage("/workspace");
+  const { window, document } = page;
+  const editor = document.getElementById("editor");
+  // The list is re-rendered whenever a document is adopted, so the row is looked
+  // up fresh each time.
+  const clickRow = () => {
+    const row = [...document.querySelectorAll("#document-list button.list-item")].find((button) =>
+      button.textContent.includes(title),
+    );
+    if (row) row.click();
+    return Boolean(row);
+  };
+
+  check("the document is listed", clickRow());
+  await waitFor(() => window.scholarflowWorkspace.getState().documentId === created.id, 6000);
+  await sleep(600);
+
+  // Type, then open the same document again: that open loads the stored text over
+  // the editor and ends whatever check was pending.
+  type(window, document, text);
+  clickRow();
+  await sleep(3000);
+
+  const total = document.getElementById("diagnostics-total").textContent;
+  const empty = document.getElementById("diagnostics-empty");
+  const shown = empty.hidden ? "" : empty.textContent;
+  check(
+    "an unchecked document is not reported as clean",
+    !/no issues found|passed every local rule|no findings/i.test(`${total} ${shown}`),
+    `${JSON.stringify(total)} / ${JSON.stringify(shown.slice(0, 90))}`,
+  );
+  check(
+    "the cancelled check does not change the text",
+    editor.value === text,
+    editor.value === text ? "" : firstDifference(editor.value, text),
+  );
+
+  // Typing again checks it, and then the panel is entitled to report findings.
+  type(window, document, `${text}A line typed after the cancelled check, with teh word in it.\n`);
+  const checked = await waitFor(
+    () => window.scholarflowWorkspace.getState().diagnostics.count > 0,
+    12000,
+  );
+  const totalAfter = document.getElementById("diagnostics-total").textContent;
+  check(
+    "typing again checks the text and reports what was found",
+    checked && !/not checked yet/i.test(totalAfter),
+    `${JSON.stringify(totalAfter.slice(0, 90))} after ${JSON.stringify(total)}`,
+  );
+
+  // A save the store refuses — text it cannot represent — must be loud, and must
+  // lose nothing: the editor keeps it, this browser keeps it, and the document on
+  // disk is untouched.
+  const typed = `${text}A line typed after the cancelled check, with teh word in it.\n`;
+  const broken = `${typed}An ill-formed paste leaves half an emoji behind: \ud83d and stops.\n`;
+  type(window, document, broken);
+  await window.scholarflowWorkspace.save("manual");
+  await sleep(1500);
+  const errorText = document.getElementById("error-message").textContent;
+  check(
+    "a save the store refuses is reported instead of looking like it succeeded",
+    document.getElementById("error-banner").hidden === false && /saving failed/i.test(errorText),
+    `${document.getElementById("error-banner").hidden ? "no banner" : "banner"}: ${JSON.stringify(errorText.slice(0, 90))}`,
+  );
+  check(
+    "the refused text is still in the editor, unchanged",
+    document.getElementById("editor").value === broken,
+    editor.value === broken ? "" : firstDifference(editor.value, broken),
+  );
+  let keptDraft = null;
+  try {
+    keptDraft = JSON.parse(window.localStorage.getItem(`scholarflow:draft:${created.id}`)).text;
+  } catch {
+    keptDraft = null;
+  }
+  check(
+    "the refused text is kept in this browser so it can be recovered",
+    keptDraft === broken,
+    keptDraft === null ? "no draft" : `${keptDraft.length} draft characters instead of ${broken.length}`,
+  );
+  check(
+    "the document on disk was not changed by the refused save",
+    (await serverDocument(created.id)).text === text,
+    JSON.stringify((await serverDocument(created.id)).text.slice(0, 40)),
+  );
+
+  window.close();
+}
+
+/* ---------------------------------------------- two presses of Save, in a row
+ *
+ * The second press must be sent, not dropped. A slow writer holds the first one
+ * in flight, which is when the queue matters. The store alone cannot tell the
+ * difference — an autosave would eventually store the same text — so the page's
+ * own requests are the evidence.
+ */
+async function savingTwiceInARowIsNotDropped() {
+  console.log("\n== Two presses of Save, one slow writer ==");
+  const title = `Save twice ${Date.now().toString(36).slice(-5)}`;
+  const created = await apiCreateDocument(title, "");
+  const page = await loadPage("/workspace", {
+    recordWrites: true,
+    delayResponses: [{ method: "PUT", pattern: "/api/documents/", ms: 1500 }],
+  });
+  const { window, document } = page;
+  const editor = document.getElementById("editor");
+  const row = [...document.querySelectorAll("#document-list button.list-item")].find((button) =>
+    button.textContent.includes(title),
+  );
+  check("the document for the double save is listed", Boolean(row));
+  if (!row) {
+    window.close();
+    return;
+  }
+  row.click();
+  await waitFor(() => window.scholarflowWorkspace.getState().documentId === created.id, 6000);
+  await sleep(700);
+
+  const first = "First press of Save.\n";
+  const second = "First press of Save.\nSecond press, typed while the first was still being written.\n";
+  type(window, document, first);
+  const inFlight = window.scholarflowWorkspace.save("manual");
+  await sleep(200);
+  type(window, document, second);
+  await window.scholarflowWorkspace.save("manual"); // queued behind the first
+  await inFlight;
+
+  const settled = await waitFor(() => window.scholarflowWorkspace.getState().dirty === false, 20000);
+  check("the document ends up saved rather than left unsaved", settled);
+  const manual = (window.__writes || []).filter((write) => write.reason === "manual");
+  check(
+    "both presses of Save were sent as manual writes",
+    manual.length >= 2,
+    `sent: ${JSON.stringify((window.__writes || []).map((write) => write.reason))}`,
+  );
+  check(
+    "the second write carries the text that was in the editor when it was pressed",
+    manual.length >= 2 && manual[manual.length - 1].text === second,
+    JSON.stringify(manual.length ? manual[manual.length - 1].text.slice(-40) : null),
+  );
+  check(
+    "the text is not changed by the queueing",
+    editor.value === second,
+    editor.value === second ? "" : firstDifference(editor.value, second),
+  );
+  check(
+    "the store holds exactly the second text",
+    (await serverDocument(created.id)).text === second,
+    JSON.stringify((await serverDocument(created.id)).text.slice(-40)),
+  );
+  window.close();
+}
+
+async function textRepresentationOracle() {
+  console.log("\n== Text representation oracle (full-text comparison) ==");
+  const suffix = Date.now().toString(36).slice(-5);
+  const cases = [];
+  for (const [index, entry] of REPRESENTATION_CASES.entries()) {
+    const title = `Repr ${suffix} ${index} ${entry.name}`;
+    const created = await apiCreateDocument(title, entry.text);
+    const stored = await serverDocument(created.id);
+    cases.push({
+      ...entry,
+      title,
+      id: created.id,
+      expected: canonical(entry.text),
+      storedAtCreation: stored.text,
+    });
+  }
+
+  const page = await loadPage("/workspace");
+  const { window, document } = page;
+  const editor = document.getElementById("editor");
+  const open = async (entry) => {
+    const row = [...document.querySelectorAll("#document-list button.list-item")].find((button) =>
+      button.textContent.includes(entry.title),
+    );
+    if (!row) return false;
+    row.click();
+    return waitFor(() => window.scholarflowWorkspace.getState().documentId === entry.id, 6000);
+  };
+
+  for (const entry of cases) {
+    const label = `"${entry.name}"`;
+    check(`${label} is listed in the sidebar`, Boolean(
+      [...document.querySelectorAll("#document-list button.list-item")].some((button) =>
+        button.textContent.includes(entry.title),
+      ),
+    ));
+    const opened = await open(entry);
+    check(`${label} opens`, opened);
+    if (!opened) continue;
+    check(
+      `${label} is stored exactly as written`,
+      entry.storedAtCreation === entry.expected,
+      `${entry.storedAtCreation.length} stored vs ${entry.expected.length} expected characters`,
+    );
+    check(
+      `${label} reaches the editor unchanged`,
+      editor.value === entry.expected,
+      `${editor.value.length} in the editor vs ${entry.expected.length} expected characters`,
+    );
+
+    const edited = `${entry.expected}\nAdded by the oracle: \u0964 \u0a38\u0a2b\u0a32\u0a24\u0a3e caf\u00e9 \u2014 \u2705\n`;
+    type(window, document, edited);
+    await saveAndSettle(window);
+    const afterSave = await serverDocument(entry.id);
+    check(
+      `${label} after a save is exactly the edited text`,
+      afterSave.text === edited,
+      `${afterSave.text.length} stored vs ${edited.length} expected characters`,
+    );
+
+    // Reopen the document from the list: the bytes must survive the round trip.
+    const other = cases[(cases.indexOf(entry) + 1) % cases.length];
+    if (other.id !== entry.id) {
+      await open(other);
+      await open(entry);
+    }
+    check(
+      `${label} survives saving, leaving and reopening unchanged`,
+      editor.value === edited,
+      `${editor.value.length} vs ${edited.length} characters`,
+    );
+
+    // Saving the same text again must not change it (no drift, no normalisation
+    // loop).
+    await saveAndSettle(window);
+    const afterSecondSave = await serverDocument(entry.id);
+    check(
+      `${label} is stable when saved again`,
+      afterSecondSave.text === edited && afterSecondSave.revision >= afterSave.revision,
+      `revision ${afterSave.revision} then ${afterSecondSave.revision}`,
+    );
+  }
+
+  // Autosave, with no Save button pressed, must store the same bytes.
+  const autosaveCase = cases.find((entry) => entry.name === "Gurmukhi");
+  if (autosaveCase) {
+    const opened = await open(autosaveCase);
+    const typed = `${autosaveCase.expected}Autosaved without pressing Save: \u0a17\u0a41\u0a30\u0a2e\u0a41\u0a16\u0a40\n`;
+    type(window, document, typed);
+    await sleep(4200);
+    const stored = await serverDocument(autosaveCase.id);
+    check(
+      "an autosave stores exactly what was typed",
+      opened && stored.text === typed,
+      `${stored.text.length} stored vs ${typed.length} expected characters`,
+    );
+  }
+
+  // Analysis over these characters must not rewrite them, and any finding it
+  // reports must own the characters it claims.
+  const analysed = await waitFor(
+    () => window.scholarflowWorkspace.getState().diagnostics.count > 0,
+    12000,
+  );
+  const findings = window.scholarflowWorkspace.getState().diagnostics.findings;
+  check(
+    "analysis over Gurmukhi, emoji and CRLF text leaves the text unchanged",
+    editor.value === (autosaveCase ? `${autosaveCase.expected}Autosaved without pressing Save: \u0a17\u0a41\u0a30\u0a2e\u0a41\u0a16\u0a40\n` : editor.value),
+    `${editor.value.length} characters`,
+  );
+  check(
+    "every finding over that text slices to exactly its own original",
+    !analysed ||
+      findings.every((finding) => editor.value.slice(finding.start, finding.end) === finding.original),
+    findings
+      .filter((finding) => editor.value.slice(finding.start, finding.end) !== finding.original)
+      .map((finding) => finding.id)
+      .join(", "),
+  );
+
+  window.close();
+  return { cases: cases.length, findings: findings.length };
+}
+
+/* ------------------------------------------------------- randomised order
+ *
+ * A person does not do things in a tidy order. This runs a seeded, repeatable
+ * sequence of edits, saves, analyses, accepts, dismisses and document switches,
+ * keeping its own model of what every document's text should be, and comparing
+ * the whole text after every step. The seed and the operation order are printed,
+ * so any failure can be replayed exactly.
+ *
+ * The rule the model encodes is the one the editor promises: text that is not
+ * stored yet must still be offered back when the document is reopened, and
+ * recovering it must restore exactly what was typed. Nothing may be substituted
+ * by another document's text.
+ */
+function mulberry32(seed) {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let value = Math.imul(state ^ (state >>> 15), 1 | state);
+    value = (value + Math.imul(value ^ (value >>> 7), 61 | value)) ^ value;
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/* An index that never falls between the two halves of a character outside the
+ * Basic Multilingual Plane: a textarea can hold a lone surrogate, but it is not
+ * text anybody typed, and the store refuses it. */
+function safeIndex(value, index) {
+  if (index > 0 && index < value.length) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xdc00 && code <= 0xdfff) return index - 1;
+  }
+  return index;
+}
+
+/* Where two texts first differ, with the context, so a failure names the
+ * character instead of printing two identical-looking prefixes. */
+function firstDifference(actual, expected) {
+  let index = 0;
+  while (index < actual.length && index < expected.length && actual[index] === expected[index]) {
+    index += 1;
+  }
+  return (
+    `first difference at character ${index}: ` +
+    `${JSON.stringify(actual.slice(Math.max(0, index - 20), index + 20))} instead of ` +
+    `${JSON.stringify(expected.slice(Math.max(0, index - 20), index + 20))}`
+  );
+}
+
+async function randomisedLifecycle(seed) {
+  console.log(`\n== Randomised lifecycle (seed ${seed}) ==`);
+  const random = mulberry32(seed);
+  const pick = (count) => Math.floor(random() * count);
+  const title = (index) => `Rand ${seed}-${index}`;
+  const initial = (index) => `Document ${index} of seed ${seed}.\nA second line, with a comma.\n`;
+
+  const created = [];
+  for (let index = 0; index < 3; index += 1) {
+    created.push(await apiCreateDocument(title(index), initial(index)));
+  }
+  const ids = created.map((entry) => entry.id);
+  // The first line of each document is never edited, so it is a stable
+  // signature: a document that starts with another document's first line is one
+  // that has received another document's text.
+  const signature = (index) => `Document ${index} of seed ${seed}.`;
+  const expected = new Map(ids.map((id, index) => [id, initial(index)]));
+  const stored = new Map(ids.map((id, index) => [id, initial(index)]));
+
+  // Writes are held back a little, the way a slow disk holds them: that is when
+  // the order of responses starts to matter, and the walk is meant to reach the
+  // states a person cannot plan.
+  const page = await loadPage("/workspace", {
+    delayResponses: [{ method: "PUT", pattern: "/api/documents/", ms: 1500 }],
+  });
+  const { window, document } = page;
+  const editor = document.getElementById("editor");
+  const banner = document.getElementById("recovery-banner");
+  const rowFor = (index) =>
+    [...document.querySelectorAll("#document-list button.list-item")].find((button) =>
+      button.textContent.includes(title(index)),
+    );
+
+  const failures = [];
+  const log = [];
+  const trace = [];
+  let currentIndex = -1;
+  const fail = (message) =>
+    failures.push(
+      `${log.length ? log[log.length - 1] : "start"}: ${message}` +
+        `\n      trace: ${trace.slice(-8).join(" | ")}`,
+    );
+
+  /* One line per operation: which document is open, whether it is dirty, the
+   * length of the editor's text, of every document's expected text, and of every
+   * draft in this browser. A failure then shows the step where the state drifted
+   * instead of a single snapshot at the end. */
+  const noteKeeping = (index) => {
+    keptNotice = `document ${index} kept its unsaved text in the editor`;
+  };
+
+  const note = (label) => {
+    const state = window.scholarflowWorkspace.getState();
+    const parts = [`${label}`, `open=${ids.indexOf(state.documentId)}`, `dirty=${state.dirty ? 1 : 0}`, `editor=${editor.value.length}`];
+    for (let index = 0; index < ids.length; index += 1) {
+      parts.push(`e${index}=${expected.get(ids[index]).length}`);
+    }
+    const draftLengths = [];
+    for (let at = 0; at < window.localStorage.length; at += 1) {
+      const key = window.localStorage.key(at);
+      if (!key.startsWith("scholarflow:draft:")) continue;
+      const index = ids.indexOf(key.slice("scholarflow:draft:".length));
+      try {
+        draftLengths.push(`d${index}=${String(JSON.parse(window.localStorage.getItem(key)).text).length}`);
+      } catch {
+        draftLengths.push(`d${index}=unreadable`);
+      }
+    }
+    parts.push(`drafts=[${draftLengths.join(",")}]`);
+    trace.push(parts.join(" "));
+    if (trace.length > 40) trace.shift();
+  };
+
+  const storedNow = async (index) => (await serverDocument(ids[index])).text;
+  let keptNotice = "";
+
+  // What the previous session left in this browser for each document.
+  const drafts = () => {
+    const out = {};
+    for (let at = 0; at < window.localStorage.length; at += 1) {
+      const key = window.localStorage.key(at);
+      if (!key.startsWith("scholarflow:draft:")) continue;
+      const id = key.slice("scholarflow:draft:".length);
+      try {
+        const stored = String(JSON.parse(window.localStorage.getItem(key)).text);
+        out[`document ${ids.indexOf(id)}`] = `${stored.length} characters ${JSON.stringify(stored.slice(-24))}`;
+      } catch {
+        out[`document ${ids.indexOf(id)}`] = "<unreadable>";
+      }
+    }
+    return out;
+  };
+
+  /* Open a document the way a person does, and hold the application to its
+   * promise about text that is not stored yet. */
+  const openIndex = async (index, { recover = true } = {}) => {
+    const row = rowFor(index);
+    if (!row) {
+      fail(`document ${index} is not listed in the sidebar`);
+      return false;
+    }
+    row.click();
+    const opened = await waitFor(() => window.scholarflowWorkspace.getState().documentId === ids[index], 6000);
+    if (!opened) {
+      fail(`document ${index} could not be opened`);
+      return false;
+    }
+    currentIndex = index;
+    const id = ids[index];
+    const storedText = await storedNow(index);
+    stored.set(id, storedText);
+    if (!storedText.startsWith(signature(index))) {
+      fail(
+        `document ${index} no longer starts with its own first line: ` +
+          `${JSON.stringify(storedText.slice(0, 40))}`,
+      );
+    }
+    const want = expected.get(id);
+    if (storedText === want) {
+      return true; // nothing is unsaved for this document
+    }
+    // Text that is not stored yet must not be lost. Either the editor already
+    // holds it — the application kept what was typed — or the stored text is
+    // shown and the words are offered back.
+    if (editor.value === want) {
+      noteKeeping(index);
+      return true;
+    }
+    if (banner.hidden !== false) {
+      fail(
+        `an unsaved edit to document ${index} was neither kept, nor stored, nor offered back: ` +
+          `stored ${storedText.length} characters ${JSON.stringify(storedText.slice(-24))}, ` +
+          `expected ${want.length} characters ${JSON.stringify(want.slice(-24))}, ` +
+          `editor ${editor.value.length} characters ${JSON.stringify(editor.value.slice(-24))}, ` +
+          `drafts ${JSON.stringify(drafts())}`,
+      );
+      return true;
+    }
+    if (recover) {
+      document.getElementById("recover-button").click();
+      await sleep(200);
+      if (editor.value !== want) {
+        fail(`recovering document ${index} gave back ${firstDifference(editor.value, want)}`);
+      }
+    }
+    return true;
+  };
+
+  const expectEditor = (label) => {
+    if (currentIndex < 0) {
+      fail(`${label}: no document was open`);
+      return;
+    }
+    const want = expected.get(ids[currentIndex]);
+    if (editor.value !== want) {
+      fail(`${label}: the editor holds ${firstDifference(editor.value, want)}`);
+    }
+  };
+
+  const saveOpen = async (label) => {
+    const settled = await saveAndSettle(window);
+    const index = currentIndex;
+    const id = ids[index];
+    const want = expected.get(id);
+    if (editor.value !== want) {
+      fail(`${label}: the editor holds ${firstDifference(editor.value, want)}`);
+      return;
+    }
+    const nowStored = await storedNow(index);
+    stored.set(id, nowStored);
+    if (nowStored !== want) {
+      fail(
+        `${label}: document ${index} stored ${firstDifference(nowStored, want)}` +
+          (settled
+            ? ""
+            : ` (the save never settled: editor revision ${window.scholarflowWorkspace.getState().revision}, ` +
+              `server revision ${(await serverDocument(id)).revision}, ` +
+              `conflict banner ${document.getElementById("conflict-banner").hidden ? "hidden" : "shown"}, ` +
+              `error ${JSON.stringify(document.getElementById("error-message").textContent.slice(0, 90))})`),
+      );
+    }
+    // No other document may have been touched by saving this one. Another
+    // document is allowed to change only into *its own* text (an autosave of an
+    // edit made earlier); anything else means one document's words were written
+    // into another's file.
+    for (let other = 0; other < ids.length; other += 1) {
+      if (other === index) continue;
+      const otherStored = await storedNow(other);
+      const allowed = otherStored === stored.get(ids[other]) || otherStored === expected.get(ids[other]);
+      if (!allowed) {
+        fail(
+          `${label}: saving document ${index} changed document ${other} to ` +
+            `${firstDifference(otherStored, stored.get(ids[other]))}`,
+        );
+      }
+      if (!otherStored.startsWith(signature(other))) {
+        fail(
+          `${label}: document ${other} now starts with ${JSON.stringify(otherStored.slice(0, 40))}, ` +
+            `which is not its own text`,
+        );
+      }
+      stored.set(ids[other], otherStored);
+    }
+  };
+
+  const words = [
+    "argument", "evidence", "caste", "commons", "fieldwork", "archive", "reading",
+    "chapter", "note", "citation", "method", "sample",
+  ];
+  const steps = 26;
+  for (let step = 0; step < steps; step += 1) {
+    const operation = pick(10);
+    const label = `step ${step}`;
+
+    if (currentIndex < 0 || operation <= 1) {
+      const index = pick(ids.length);
+      log.push(`open(${index})`);
+      await openIndex(index);
+      expectEditor(`${label} open(${index})`);
+      note(`open(${index})`);
+      continue;
+    }
+
+    const id = ids[currentIndex];
+    if (operation === 2 || operation === 3 || operation === 4) {
+      const before = expected.get(id);
+      let after;
+      if (operation === 2) {
+        after = `${before}${
+          [
+            "A sentence added by the random walk, in order to exercise corrections.",
+            "Another clause, added mid-thought; with a semicolon.",
+            "\u0a07\u0a71\u0a15 \u0a05\u0a16\u0a3c\u0a2c\u0a3e\u0a30\u0a40 \u0a32\u0a3e\u0a08\u0a28\u0964",
+            "A line with an emoji \ud83d\ude42 and a dash \u2014 here.",
+            "The tehnique of the argument is fine, but the evidence dont support it.",
+            "A number of samples were read in order to test the method.",
+          ][pick(6)]
+        }\n`;
+      } else if (operation === 3) {
+        const at = safeIndex(
+          before,
+          signature(currentIndex).length + pick(before.length - signature(currentIndex).length + 1),
+        );
+        after = `${before.slice(0, at)}${
+          [" [inserted] ", " (a parenthetical) ", ` ${words[pick(words.length)]} `][pick(3)]
+        }${before.slice(at)}`;
+      } else if (before.length > signature(currentIndex).length + 8) {
+        const at = safeIndex(
+          before,
+          signature(currentIndex).length + pick(before.length - signature(currentIndex).length - 6),
+        );
+        const until = safeIndex(before, Math.min(before.length, at + 1 + pick(6)));
+        after = before.slice(0, at) + before.slice(until);
+      } else {
+        after = `${before} More text, because there was too little to delete.\n`;
+      }
+      type(window, document, after);
+      expected.set(id, after);
+      log.push(`edit(${operation})@${after.length}`);
+      expectEditor(`${label} edit(${operation})`);
+      note(`edit(${operation}) doc ${currentIndex}`);
+      continue;
+    }
+
+    if (operation === 5) {
+      log.push(`save(doc ${currentIndex})`);
+      await saveOpen(`${label} save`);
+      note(`save(doc ${currentIndex})`);
+      continue;
+    }
+
+    if (operation === 6) {
+      window.scholarflowWorkspace.analyse();
+      await sleep(1500);
+      log.push("analyse");
+      expectEditor(`${label} analyse`);
+      note("analyse");
+      continue;
+    }
+
+    if (operation === 7 || operation === 8) {
+      const findings = window.scholarflowWorkspace.getState().diagnostics.findings;
+      if (!findings.length) {
+        log.push(`${operation === 7 ? "accept" : "dismiss"}(no findings)`);
+        expectEditor(`${label} no findings`);
+        continue;
+      }
+      const correctable = findings.filter(
+        (item) => item.replacement !== null && item.replacement !== undefined,
+      );
+      const pool = operation === 7 && correctable.length ? correctable : findings;
+      const finding = pool[pick(pool.length)];
+      window.scholarflowWorkspace.openSuggestion(finding.id);
+      await sleep(120);
+      const analysedText = window.scholarflowWorkspace.getState().diagnostics.analysedText;
+      const applyable =
+        finding.replacement !== null &&
+        finding.replacement !== undefined &&
+        analysedText === expected.get(id) &&
+        expected.get(id).slice(finding.start, finding.end) === finding.original;
+      if (operation === 7) {
+        document.getElementById("suggestion-accept").click();
+        await sleep(300);
+        if (applyable) {
+          expected.set(id, spliceText(expected.get(id), finding.start, finding.end, finding.replacement));
+          log.push(`accept(${finding.id})`);
+        } else {
+          log.push(`accept(${finding.id}) refused-or-inapplicable`);
+        }
+      } else {
+        document.getElementById("suggestion-dismiss").click();
+        await sleep(300);
+        log.push(`dismiss(${finding.id})`);
+      }
+      expectEditor(`${label} ${operation === 7 ? "accept" : "dismiss"}`);
+      note(`${operation === 7 ? "accept" : "dismiss"} doc ${currentIndex}`);
+      continue;
+    }
+
+    // The last operation: go away and come back, then leave and return a second
+    // time with the text still unsaved.
+    {
+      const away = currentIndex;
+      const other = (away + 1) % ids.length;
+      log.push(`switch(${away}->${other})`);
+      note(`switch away from ${away}`);
+      await openIndex(other);
+      expectEditor(`step ${step} switch away`);
+      await openIndex(away);
+      expectEditor(`step ${step} switch back`);
+      note(`switch back to ${away}`);
+      const want = expected.get(id);
+      if (editor.value !== want && banner.hidden === false) {
+        document.getElementById("recover-button").click();
+        await sleep(200);
+        log.push(`recover(${id})`);
+        expectEditor(`step ${step} recover`);
+      }
+    }
+  }
+
+  // A restart: an unsaved edit must survive a fresh page, keyed to its own
+  // document, and must not appear in any other document.
+  if (currentIndex >= 0) {
+    const id = ids[currentIndex];
+    const restartText = `${expected.get(id)}An edit typed just before the application restarts.\n`;
+    type(window, document, restartText);
+    expected.set(id, restartText);
+    log.push(`restart-edit(doc ${currentIndex})`);
+    // jsdom gives every window a fresh localStorage, so the only faithful way to
+    // model a restart is to seed the window with the draft the previous session
+    // left behind — the same way the crash-recovery checks do it.
+    const reloaded = await loadPage("/workspace", {
+      seedDraft: { id, text: restartText, title: title(currentIndex) },
+    });
+    const rows = [...reloaded.document.querySelectorAll("#document-list button.list-item")];
+    const row = rows.find((button) => button.textContent.includes(title(currentIndex)));
+    if (!row) {
+      fail("after a restart the document is not listed");
+    } else {
+      row.click();
+      await waitFor(
+        () => reloaded.window.scholarflowWorkspace.getState().documentId === id,
+        6000,
+      );
+      const restartBanner = reloaded.document.getElementById("recovery-banner");
+      if (restartBanner.hidden !== false) {
+        const nowStored = await storedNow(currentIndex);
+        if (nowStored !== restartText) {
+          fail(
+            `an unsaved edit did not survive a restart and was not offered back: stored ` +
+              `${JSON.stringify(nowStored.slice(0, 30))} instead of ${JSON.stringify(restartText.slice(0, 30))}`,
+          );
+        }
+      } else {
+        reloaded.document.getElementById("recover-button").click();
+        await sleep(200);
+        if (reloaded.document.getElementById("editor").value !== restartText) {
+          fail(
+            `after a restart the recovered text was ${firstDifference(
+              reloaded.document.getElementById("editor").value,
+              restartText,
+            )}`,
+          );
+        }
+      }
+      // The other documents must not have received that text.
+      for (let other = 0; other < ids.length; other += 1) {
+        if (other === currentIndex) continue;
+        const otherStored = await storedNow(other);
+        if (otherStored.includes("just before the application restarts")) {
+          fail(`after a restart document ${other} holds document ${currentIndex}'s unsaved text`);
+        }
+      }
+    }
+    reloaded.window.close();
+  }
+
+  // Finish honestly: open every document, recover anything offered, save, and
+  // compare the stored text in full against the walk's model.
+  for (let index = 0; index < ids.length; index += 1) {
+    await openIndex(index);
+    await saveOpen(`final save of document ${index}`);
+    const finalText = await storedNow(index);
+    if (!finalText.startsWith(signature(index))) {
+      failures.push(
+        `document ${index} stored another document's text: ${JSON.stringify(finalText.slice(0, 40))}`,
+      );
+    }
+    if (finalText !== expected.get(ids[index])) {
+      failures.push(
+        `document ${index} does not match the expected text at the end of the walk: ` +
+          firstDifference(finalText, expected.get(ids[index])),
+      );
+    }
+  }
+
+  if (keptNotice) console.log(`   note: ${keptNotice}`);
+  console.log(`   seed ${seed}, operations: ${log.join(" > ")}`);
+  if (failures.length) console.log(`   trace:\n     ${trace.join("\n     ")}`);
+  check(
+    `a seeded random walk of ${steps} operations never rewrites the wrong text`,
+    failures.length === 0,
+    failures.slice(0, 3).join(" | "),
+  );
+
+  window.close();
+  return { seed, steps, log };
+}
+
 async function textIntegrityUnderDiagnostics() {
   console.log("\n== Text integrity under diagnostics and refinement ==");
   // execCommand is provided because the page prefers it in a real browser to
@@ -1378,6 +2596,14 @@ async function main() {
   await stage2Diagnostics();
   await stage3Diagnostics();
   await textIntegrityUnderDiagnostics();
+  await documentIdentityUnderInFlightRequests();
+  await savingTwiceInARowIsNotDropped();
+  await emojiOffsetsDoNotBreakCorrections();
+  await aCancelledCheckIsNotReportedAsClean();
+  await textRepresentationOracle();
+  for (const seed of LIFECYCLE_SEEDS) {
+    await randomisedLifecycle(seed);
+  }
   await quickEditorRefine();
 
   // The saved document is still on disk at the end of the run.

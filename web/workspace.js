@@ -69,6 +69,11 @@
     statusTimer: null,
     retry: null,
     list: [],
+    // Bumped for every open, list and history request, so a response that is no
+    // longer the newest one can be recognised and dropped instead of applied.
+    openToken: 0,
+    listToken: 0,
+    historyToken: 0,
   };
 
   // ---------------------------------------------------------------- helpers
@@ -194,12 +199,56 @@
   }
 
   function scheduleAutosave() {
+    const forDocument = state.document ? state.document.id : null;
     window.clearTimeout(state.autosaveTimer);
     state.autosaveTimer = window.setTimeout(() => {
-      if (state.dirty && !state.saving && state.document) {
-        saveDocument("autosave");
-      }
+      // If the person has opened another document since this timer was armed,
+      // the editor no longer holds this document's text, and saving here is
+      // exactly how one document's words end up in another document's file.
+      if (!state.document || state.document.id !== forDocument) return;
+      if (!state.dirty) return;
+      // `saveDocument` queues the write if one is already in flight, so an
+      // autosave that fires during a slow write is deferred rather than lost.
+      saveDocument("autosave");
     }, AUTOSAVE_DELAY_MS);
+  }
+
+  /* The engine counts characters (Unicode code points); the editor's ``slice``
+   * and ``setSelectionRange`` count UTF-16 code units. In a document holding an
+   * emoji, or any other character outside the Basic Multilingual Plane, the two
+   * differ by one for every such character, and a correction aimed at those
+   * offsets lands on the wrong characters — which the accept path then refuses,
+   * leaving every finding after an emoji unusable. Convert once, here, into the
+   * units the editor uses; nothing else in the page has to know.
+   */
+  function characterOffsetsToEditorUnits(findings, text) {
+    if (!findings.length || !/[\u{10000}-\u{10FFFF}]/u.test(text)) return findings;
+    const wanted = [...new Set(findings.flatMap((item) => [item.start, item.end]))]
+      .filter((index) => Number.isInteger(index) && index >= 0)
+      .sort((a, b) => a - b);
+    const units = new Map();
+    let at = 0;
+    let characters = 0;
+    let count = 0;
+    for (const character of text) {
+      while (at < wanted.length && wanted[at] <= characters) {
+        units.set(wanted[at], count);
+        at += 1;
+      }
+      if (at >= wanted.length) break;
+      characters += 1;
+      count += character.length;
+    }
+    while (at < wanted.length) {
+      // An offset at or past the end of the text: the end of the editor's text.
+      units.set(wanted[at], count);
+      at += 1;
+    }
+    return findings.map((item) => {
+      const start = units.get(item.start);
+      const end = units.get(item.end);
+      return start === undefined || end === undefined ? item : { ...item, start, end };
+    });
   }
 
   /* Apply a programmatic edit to the editor.
@@ -440,13 +489,16 @@
 
   // ------------------------------------------------------------ documents
   async function loadDocumentList() {
+    const token = (state.listToken += 1);
     try {
       const payload = await request(`/api/documents?q=${encodeURIComponent(elements.documentSearch.value.trim())}`);
+      if (token !== state.listToken) return; // a newer search is already on its way
       state.list = payload.documents || [];
       renderDocumentList();
       elements.storageNote.textContent =
         "Documents are stored locally in your ScholarFlow data folder (writing-documents.sqlite3).";
     } catch (error) {
+      if (token !== state.listToken) return;
       showError(`The document list could not be loaded: ${error.message}`, loadDocumentList);
     }
   }
@@ -481,8 +533,14 @@
   }
 
   async function openDocument(id, { force = false } = {}) {
+    // Every open is a newer intention than the one before it. If a person
+    // clicks one document and then another, the first response must be dropped
+    // rather than adopted: otherwise the editor shows the document they
+    // abandoned, and the one they chose is silently discarded.
+    const token = (state.openToken += 1);
     try {
       const document_ = await request(`/api/documents/${id}`);
+      if (token !== state.openToken) return null;
       const typed = elements.editor.value;
       const sameDocument = Boolean(state.document) && state.document.id === id;
       // Start-up opens the most recent document. On a cold start that takes a
@@ -513,6 +571,7 @@
       clearReview("");
       return document_;
     } catch (error) {
+      if (token !== state.openToken) return null; // a superseded load is not worth an error
       showError(`That document could not be opened: ${error.message}`, () => openDocument(id));
       return null;
     }
@@ -536,10 +595,20 @@
 
   async function saveDocument(reason = "manual") {
     if (!state.document) return;
+    // The document this write is for, and the only document its response may
+    // touch. Compared by id, not by object: `adopt()` replaces `state.document`
+    // with fresh data for the *same* document, so an identity check would treat
+    // every successful save as "the user moved on". A write already in flight
+    // cannot be recalled, but its response must never be adopted after the person
+    // has opened another document: that is how the next autosave ends up pointed
+    // at the wrong file, which is what copied one document's words into another
+    // document's file.
+    const targetId = state.document.id;
     if (state.saving) {
-      // Never drop a queued autosave: remember it and run it when the current
-      // write finishes, otherwise an edit made mid-save stays unsaved.
-      if (reason === "autosave") state.queuedSave = "autosave";
+      // Never drop a queued save: remember it and run it when the current write
+      // finishes, otherwise an edit made mid-save stays unsaved. A manual save
+      // outranks an autosave, because it is an explicit request.
+      state.queuedSave = state.queuedSave === "manual" ? "manual" : reason;
       return;
     }
     if (!state.dirty && reason !== "manual") return;
@@ -555,6 +624,15 @@
           reason,
         }),
       });
+      if (!state.document || state.document.id !== targetId) {
+        // The person has opened another document since this write started. The
+        // write itself already happened, so nothing is unsaved, but the
+        // response belongs to a document that is no longer open: adopting it
+        // would point the next autosave at the wrong file — the defect that
+        // copied one document's text into another. Newer edits are in the other
+        // document's draft.
+        return;
+      }
       // The response carries the stored revision and timestamp, but the editor
       // keeps whatever the researcher has typed meanwhile.
       const stillDirty =
@@ -569,6 +647,9 @@
         showStatus("Saved locally.");
       }
     } catch (error) {
+      // A failure for a document that is no longer open is not this document's
+      // problem to report.
+      if (!state.document || state.document.id !== targetId) return;
       if (error.status === 409) {
         elements.conflictBanner.hidden = false;
         setSaveState("Changed elsewhere", "dirty");
@@ -579,28 +660,61 @@
       state.saving = false;
       const queued = state.queuedSave;
       state.queuedSave = null;
+      // Run the queued write even if the person has changed document in the
+      // meantime. It is safe because `saveDocument` captures its own target when
+      // it starts and writes the editor's text, which belongs to whatever
+      // document is open now — and dropping it instead would leave the open
+      // document's edits unwritten until some later keystroke.
       if (queued) saveDocument(queued);
     }
   }
 
   async function loadHistory() {
     if (!state.document) return;
+    // Read the open document's history through a captured id, and render it only
+    // if that document is still the open one: the Restore buttons in this list
+    // act on whatever document is open, so rendering another document's
+    // revisions invites restoring the wrong version.
+    const forDocument = state.document.id;
+    const token = (state.historyToken += 1);
     try {
-      const payload = await request(`/api/documents/${state.document.id}/revisions`);
+      const payload = await request(`/api/documents/${forDocument}/revisions`);
+      if (token !== state.historyToken) return;
+      if (!state.document || state.document.id !== forDocument) return;
       renderHistory(payload.revisions || []);
     } catch {
+      if (token !== state.historyToken) return;
       elements.history.replaceChildren();
     }
   }
 
   async function restoreRevision(revision) {
     if (!state.document) return;
+    if (state.dirty && elements.editor.value !== (state.document.text || "")) {
+      // The editor holds words that exist nowhere but this window. A restore
+      // replaces them, so the draft is written first (making the offer below
+      // true) and the person is asked rather than informed afterwards.
+      writeDraft();
+      const proceed = window.confirm(
+        "There are unsaved edits in the editor. Restoring an earlier revision replaces them. " +
+          "They are kept on this computer and the recovery banner will offer them back. Restore anyway?",
+      );
+      if (!proceed) {
+        showStatus("Restore cancelled. Your unsaved edits are untouched.");
+        return;
+      }
+    }
     try {
       const document_ = await request(
         `/api/documents/${state.document.id}/revisions/${revision}/restore`,
         { method: "POST" },
       );
       adopt(document_);
+      // Offer back anything that was in the editor but is not in the document.
+      const draft = readDraft(document_.id);
+      if (draft && typeof draft.text === "string" && draft.text !== document_.text) {
+        elements.recoveryBanner.hidden = false;
+      }
       showStatus(`Revision ${revision} restored. The previous text is kept in history.`);
     } catch (error) {
       showError(`That revision could not be restored: ${error.message}`);
@@ -937,7 +1051,12 @@
         scheduleAnalysis(0);
         return null;
       }
-      state.diagnostics.findings = Array.isArray(report.diagnostics) ? report.diagnostics : [];
+      // The engine's offsets count characters; the editor counts UTF-16 code
+      // units. Convert them before anything can use them.
+      state.diagnostics.findings = characterOffsetsToEditorUnits(
+        Array.isArray(report.diagnostics) ? report.diagnostics : [],
+        text,
+      );
       state.diagnostics.categories = Array.isArray(report.categories) ? report.categories : [];
       state.diagnostics.counts = report.counts || { total: 0, error: 0, style: 0 };
       state.diagnostics.metrics = report.metrics || null;
@@ -1161,6 +1280,9 @@
       return;
     }
     const shown = visibleFindings();
+    // "Nothing analysed yet" is not the same as "nothing found": after a
+    // cancelled check the panel must say so rather than report a clean document.
+    const analysed = diagnostics.text !== null;
     const dismissed = diagnostics.dismissed.length;
     const errorCount = diagnostics.findings.filter((item) => item.kind === "error").length;
     const styleCount = diagnostics.findings.filter((item) => item.kind === "style").length;
@@ -1184,11 +1306,15 @@
     const total = diagnostics.findings.length;
     elements.diagnosticsTotal.hidden = false;
     elements.diagnosticsTotal.textContent =
-      total === 0
-        ? "No issues found in this document."
-        : `${total} issue${total === 1 ? "" : "s"} in this document` +
-          (dismissed ? ` (${dismissed} dismissed)` : "") +
-          (diagnostics.truncated ? " — the first findings of a long document" : ".");
+      diagnostics.error
+        ? "The check did not run."
+        : !analysed
+          ? "Not checked yet."
+          : total === 0
+            ? "No issues found in this document."
+            : `${total} issue${total === 1 ? "" : "s"} in this document` +
+              (dismissed ? ` (${dismissed} dismissed)` : "") +
+              (diagnostics.truncated ? " — the first findings of a long document" : ".");
     const profileLabel = diagnostics.profileLabel || "Academic Standard";
     const styleOff = [];
     for (const item of diagnostics.categories) {
@@ -1273,12 +1399,16 @@
       elements.diagnosticsEmpty.hidden = false;
       if (diagnostics.loading) {
         elements.diagnosticsEmpty.textContent = "Checking this document…";
-      } else if (!diagnostics.spellingAvailable && !diagnostics.error) {
+      } else if (diagnostics.error) {
+        elements.diagnosticsEmpty.textContent = `Diagnostics could not run: ${diagnostics.error}. Your text is unchanged.`;
+      } else if (!analysed) {
+        elements.diagnosticsEmpty.textContent =
+          "Nothing has been checked in this window yet. Press Check, or keep typing to have " +
+          "the text checked as you go — no claim is made about this text until then.";
+      } else if (!diagnostics.spellingAvailable) {
         elements.diagnosticsEmpty.textContent =
           "The bundled spelling dictionary could not be loaded, so spelling was not checked. " +
           "Grammar, punctuation and style checks still ran locally.";
-      } else if (diagnostics.error) {
-        elements.diagnosticsEmpty.textContent = `Diagnostics could not run: ${diagnostics.error}. Your text is unchanged.`;
       } else if (diagnostics.findings.length) {
         const which = diagnostics.filter === "error" ? "errors" : "style suggestions";
         elements.diagnosticsEmpty.textContent = `No ${which} here. Switch the filter to see the other findings.`;

@@ -6,9 +6,10 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from research_library.store import ResearchLibrary, default_data_dir
@@ -47,6 +48,28 @@ app = FastAPI(
     title="Academic Literature Review Assistant API",
     version="2.1.0",
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Answer a rejected request with a message the server can always encode.
+
+    FastAPI's default handler echoes the offending input back to the client. A
+    lone surrogate — the low half of an emoji, as an ill-formed paste can produce
+    — cannot be encoded into that response at all, so a rejected save came back as
+    an internal server error. Naming the field is enough for the caller to act
+    on, and it never puts document text into an error response.
+    """
+    fields: list[str] = []
+    for error in exc.errors():
+        location = ".".join(str(part) for part in error.get("loc", ()) if part != "body")
+        if location and location not in fields:
+            fields.append(location)
+    detail = "That request was rejected by validation"
+    detail = f"{detail}: {', '.join(fields)}." if fields else f"{detail}."
+    return JSONResponse(status_code=422, content={"detail": detail})
+
+
 engine = AcademicWritingEngine()
 editor_service = AcademicEditorService(engine=engine)
 app.mount("/assets", StaticFiles(directory=WEB_DIR), name="assets")

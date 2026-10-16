@@ -10,9 +10,11 @@ nothing, and the backend tests never render anything.
 
 | Layer | Verified here | How |
 |---|---|---|
-| Rules, offsets, classifications, profiles | **Yes** | `pytest` (310 tests), `tools.repository_check`, `flake8` |
-| Text integrity (the document is the same text before and after a check, an accept changes only its own range, a save does not wipe the analysis, save/reopen is byte-identical, typing during a check survives) | **Yes, in jsdom and at the data level** | the "Text integrity under diagnostics and refinement" stage in `tests/gui/workspace_dom_check.mjs` and `tests/test_workspace_text_integrity.py` |
-| Interface behaviour (markers exist, labels, filters, Accept, Dismiss, stale refusal, anchored-pop-up maths, undo-preserving edits) | **Yes, in jsdom** | `tests/gui/workspace_dom_check.mjs`, 184/184 checks |
+| Rules, offsets, classifications, profiles | **Yes** | `pytest` (323 tests), `tools.repository_check` (171 files, 0 failures), `flake8` |
+| Text integrity (the document is the same text before and after a check, an accept changes only its own range, a save does not wipe the analysis, save/reopen is byte-identical, typing during a check survives, text with an emoji is stored and re-read byte-for-byte) | **Yes, in jsdom and at the data level** | the "Text integrity under diagnostics and refinement" and "Text representation oracle" stages in `tests/gui/workspace_dom_check.mjs`, `tests/test_workspace_text_integrity.py`, `tests/test_workspace_save_paths.py` |
+| Which document a response belongs to (a late load, a late save, a switch during a save, two saves in a row, restore over unsaved edits) | **Yes, in jsdom** | the "Document identity under in-flight requests" and "Two presses of Save" stages in `tests/gui/workspace_dom_check.mjs` |
+| Corrections in text that contains an emoji (the highlight covers the flagged characters and Accept changes exactly its own word) | **Yes, in jsdom** | the "Corrections in a document that contains an emoji" stage; `tests/test_workspace_save_paths.py` pins the engine's side of the offset contract |
+| Interface behaviour (markers exist, labels, filters, Accept, Dismiss, stale refusal, anchored-pop-up maths, undo-preserving edits, a check that never ran is not reported as clean) | **Yes, in jsdom** | `tests/gui/workspace_dom_check.mjs`, 312 checks, three runs |
 | Packaged build starts, serves the workspace, and its API answers | **Yes, in the Windows CI smoke gate** | `desktop_app.py --smoke-test`, 58 checks |
 | **What a human sees in the packaged window** | **Not yet observed** | this procedure — nobody has run it yet, and no result below may be reported as passing until someone does |
 
@@ -167,12 +169,44 @@ Expected findings, in the writer's terms:
 ### 2.9 The degraded and empty states
 
 - [ ] A document with clean prose shows "No issues found in this document." and
-      no markers.
+      no markers — but only **after** a check has run. Before any check, the
+      panel must say **"Not checked yet."** and the message "Nothing has been
+      checked in this window yet…". It must not claim the text is clean: a check
+      can be ended before it runs (for example by opening the same document
+      again), and the panel may not turn that into a verdict. Typing one more
+      character starts a check, after which findings or the clean verdict
+      appear.
 - [ ] An empty document says there is nothing to check yet.
 - [ ] With the volume pulled out (or on a machine with no network at all), every
       check above still works: **nothing here needs the internet.**
 
-### 2.10 The rest of the application still works
+### 2.10 A document that contains an emoji
+
+Offsets are counted in characters by the engine and in UTF-16 code units by the
+textarea. That mismatch was a real defect — every finding after an emoji pointed
+one unit short, the highlight covered the wrong characters and Accept refused —
+and it is fixed by converting the offsets once, where the report arrives. It is
+worth looking at in the packaged window because the conversion is invisible in
+ordinary prose.
+
+- [ ] Paste this passage into the editor (the emoji is U+1F642):
+
+      The tehnique 🙂 used here is the analysys of caste, and the evidence dont
+      support it.
+
+- [ ] After the check, the marker and the highlight are over **tehnique**,
+      **analysys**, **dont** and **is**, not one character to the left or right
+      of them.
+- [ ] Clicking a finding moves the caret into the marked word, not the space
+      before it.
+- [ ] Accept the **analysys** suggestion. The word becomes **analysis**; the
+      emoji, the spacing and the rest of the sentence are untouched. In a
+      textarea, Accept replaces the selected range, so the browser's own undo
+      (Ctrl+Z) should put the original spelling back in one step.
+- [ ] Save, close, reopen: the emoji is still a single character and the
+      corrected spelling is there.
+
+### 2.11 The rest of the application still works
 
 - [ ] The quick editor at the same window's start page still refines a passage
       and still keeps its citations.
@@ -195,6 +229,17 @@ detail for a failure:
 
 - It does not claim the anchoring is pixel-perfect on every DPI scaling level;
   fractional scaling can move a caret by a pixel.
+- It does not claim clicking the document that is already open is harmless: that
+  click ends a pending check (the stored text is adopted and the panel reset), so
+  the panel says "Not checked yet." until the next keystroke. Nothing is lost —
+  the text is untouched and the draft still holds any edit — but the check has to
+  be started again.
+- It does not claim text the store cannot represent can be saved. A lone
+  surrogate (half an emoji, as an ill-formed paste can leave behind) is refused
+  with the message "That request was rejected by validation: text."; the editor
+  keeps the text and this browser keeps the draft, but the document on disk is
+  not updated until the stray half is removed. Before the fix this answer was a
+  server error, which said nothing about what to do.
 - It does not claim the automated checks observed any of the above: they run in
   jsdom (no layout, no undo stack) and in a headless smoke gate (no window).
 - It does not claim Windows 11 verification has happened yet. That is what this
