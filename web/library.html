@@ -34,6 +34,24 @@
       </form>
       <div id="library-results" class="results" aria-live="polite"></div>
     </section>
+    <section class="panel">
+      <h2>Add a reference</h2>
+      <p>Add a record manually. It is saved in your local library and remains available after restarting ScholarFlow.</p>
+      <form id="add-work-form">
+        <label>Title (required)<input id="add-title" required maxlength="500" placeholder="e.g. Synthetic study of village commons"></label>
+        <label>Authors (comma separated)<input id="add-authors" maxlength="1000" placeholder="e.g. Test Researcher, Another Author"></label>
+        <div class="filters">
+          <label>Year<input id="add-year" type="number" min="1000" max="2200"></label>
+          <label>Item type<select id="add-type"><option>article</option><option>book</option><option>bookSection</option><option>thesis</option><option>report</option><option>paper-conference</option></select></label>
+          <label>Publication<input id="add-publication" maxlength="500"></label>
+          <label>DOI<input id="add-doi" maxlength="300" placeholder="e.g. 10.1234/example"></label>
+          <label>URL<input id="add-url" type="url" maxlength="2000"></label>
+        </div>
+        <label>Abstract<textarea id="add-abstract" maxlength="5000" rows="4"></textarea></label>
+        <button type="submit">Add reference</button>
+        <p class="hint" id="add-work-result" role="status"></p>
+      </form>
+    </section>
     <div class="grid">
       <section class="panel">
         <h2>Import Zotero references</h2>

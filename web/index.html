@@ -22,12 +22,18 @@
         <span class="status-dot" aria-hidden="true"></span>
         Checking engine
       </span>
+      <a class="icon-link" href="/workspace">Writing workspace</a>
       <a class="icon-link" href="/library">Research library</a>
       <a class="icon-link" href="/docs" target="_blank" rel="noreferrer">API docs</a>
     </div>
   </header>
 
   <main>
+    <div class="editor-error" id="editor-error" role="alert" hidden>
+      <span id="editor-error-message"></span>
+      <button type="button" class="text-button" id="editor-retry">Retry</button>
+      <button type="button" class="text-button" id="editor-dismiss">Dismiss</button>
+    </div>
     <section class="intro" aria-labelledby="page-title">
       <div>
         <p class="eyebrow">Researcher-controlled revision</p>

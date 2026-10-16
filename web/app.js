@@ -26,6 +26,10 @@
     downloadButton: document.querySelector("#download-button"),
     fileInput: document.querySelector("#file-input"),
     toast: document.querySelector("#toast"),
+    errorBanner: document.querySelector("#editor-error"),
+    errorMessage: document.querySelector("#editor-error-message"),
+    retryButton: document.querySelector("#editor-retry"),
+    dismissError: document.querySelector("#editor-dismiss"),
   };
 
   const state = {
@@ -33,6 +37,9 @@
     capabilities: null,
     lastResult: null,
     toastTimer: null,
+    lastRequest: null,
+    requestSequence: 0,
+    activeRequest: 0,
   };
 
   const sampleText = [
@@ -104,8 +111,25 @@
   function renderNotices(notices) {
     elements.noticeList.replaceChildren();
     notices.forEach((notice) => {
-      elements.noticeList.append(createElement("div", "notice", notice));
+      const isInfo = typeof notice === "object" && notice !== null;
+      const node = createElement(
+        "div",
+        isInfo ? "notice is-info" : "notice",
+        isInfo ? notice.message : notice,
+      );
+      elements.noticeList.append(node);
     });
+  }
+
+  function clearEditorError() {
+    elements.errorBanner.hidden = true;
+  }
+
+  function showEditorError(message, retry) {
+    elements.errorMessage.textContent = message;
+    elements.errorBanner.hidden = false;
+    elements.retryButton.hidden = !retry;
+    state.retry = retry || null;
   }
 
   function renderSuggestions(suggestions) {
@@ -282,6 +306,31 @@
     }
   }
 
+  /* Explain a result that changed nothing.
+   *
+   * Previously the page returned the same text with "100% retained", zero
+   * suggestions and no message at all, which made a successful request look
+   * like a broken Refine button. */
+  function buildNotices(result) {
+    const notices = [...(result.notices || [])];
+    const unchanged = (result.refined_text || "").trim() === (result.original_text || "").trim();
+    if (unchanged) {
+      notices.push({
+        message:
+          "No changes were needed for this passage. The local editor only alters wording it can " +
+          "correct safely (filler phrases, wordiness, overclaiming); it found none here, so your " +
+          "text was returned unchanged. This is a result, not a failure.",
+      });
+    }
+    if (state.lastRequest && state.lastRequest.text !== result.original_text) {
+      notices.push({
+        message:
+          "The passage was edited after this revision was produced. Refine again to update the report.",
+      });
+    }
+    return notices;
+  }
+
   function renderResult(result) {
     state.lastResult = result;
     elements.refined.value = result.refined_text;
@@ -293,7 +342,7 @@
       : "Deterministic local editor";
     refreshCounts();
     renderStats(result.stats);
-    renderNotices(result.notices || []);
+    renderNotices(buildNotices(result));
     renderSuggestions(result.suggestions || []);
     renderStructure(result.literature_review || {});
     renderSafeguards(result.safeguards || {});
@@ -318,24 +367,37 @@
       return;
     }
 
+    const request = {
+      text,
+      profile: state.profile,
+      use_llm: elements.useLlm.checked,
+    };
+    state.lastRequest = request;
+    const sequence = ++state.requestSequence;
+    state.activeRequest = sequence;
+
     setLoading(true);
+    clearEditorError();
     try {
       const response = await fetch("/editor/rewrite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text,
-          profile: state.profile,
-          use_llm: elements.useLlm.checked,
-        }),
+        body: JSON.stringify(request),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(errorMessage(payload, response.status));
+      // Ignore a slow response that is no longer the newest request, so an
+      // older revision can never overwrite a newer one on screen.
+      if (sequence !== state.activeRequest) return;
       renderResult(payload);
+      showToast("Revision ready. Review the report below.");
     } catch (error) {
-      showToast(error.message || "The passage could not be refined.", true);
+      if (sequence !== state.activeRequest) return;
+      const message = error.message || "The passage could not be refined.";
+      showToast(message, true);
+      showEditorError(message, refine);
     } finally {
-      setLoading(false);
+      if (sequence === state.activeRequest) setLoading(false);
     }
   }
 

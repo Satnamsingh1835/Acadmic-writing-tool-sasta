@@ -65,6 +65,36 @@ jobs:
           path: pyinstaller-attempt*.log
           if-no-files-found: ignore
           retention-days: 14
+      - name: Smoke-test the packaged application
+        shell: pwsh
+        run: |
+          $exe = Join-Path $PWD "dist\ScholarFlow\ScholarFlow.exe"
+          if (-not (Test-Path $exe)) { throw "Packaged executable missing: $exe" }
+          $report = Join-Path $PWD "smoke-test.log"
+          # Headless: starts the packaged loopback server (no window) and
+          # checks bundled assets, editor rewrites for every profile,
+          # library add/search/CSL/document/passage/matrix flows, and
+          # on-disk database persistence in an isolated data directory.
+          # The build is windowed, so results are written to a report file
+          # (Start-Process also waits for GUI-subsystem executables).
+          $proc = Start-Process -FilePath $exe -ArgumentList "--smoke-test", "--smoke-report", $report -Wait -PassThru
+          if (Test-Path $report) { Get-Content $report } else { Write-Output "No smoke report was produced." }
+          if ($proc.ExitCode -ne 0) {
+            $failed = (Select-String -Path $report -Pattern '^SMOKE FAIL' -ErrorAction SilentlyContinue |
+              Select-Object -First 25 | ForEach-Object { $_.Line }) -join "`n"
+            if (-not $failed) { $failed = "exit code $($proc.ExitCode); no SMOKE FAIL lines were written" }
+            $enc = $failed.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=Packaged ScholarFlow smoke test failed::$enc"
+            exit $proc.ExitCode
+          }
+      - name: Upload smoke-test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scholarflow-smoke-log
+          path: smoke-test.log
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:

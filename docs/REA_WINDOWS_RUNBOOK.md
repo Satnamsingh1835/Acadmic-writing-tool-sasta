@@ -21,6 +21,16 @@ Requirements: Windows 11, Python 3.12 available as `py -3.12`, Microsoft Edge We
 .\scripts\build_windows_desktop.ps1
 ```
 
+The script runs the test suite, builds the package, then runs the packaged
+headless self-check (`ScholarFlow.exe --smoke-test`) and refuses to report
+success if any check fails. Read `smoke-test.log` in the project root for the
+per-check results. Run the same check manually with:
+
+```powershell
+.\dist\ScholarFlow\ScholarFlow.exe --smoke-test --smoke-report smoke-test.log
+Get-Content smoke-test.log
+```
+
 Launch `dist\ScholarFlow\ScholarFlow.exe`. Verify that the native window opens, the editor and Research Library load, synthetic text can be reviewed, a TXT document can be indexed, and the app exits cleanly. The output is a one-folder distribution, not an MSI installer. The Windows CI artifact still needs acceptance on the target PC.
 
 If script execution is blocked, inspect the local execution policy. Do not globally disable Smart App Control or weaken system security merely to run a script.

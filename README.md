@@ -95,6 +95,33 @@ uvicorn api:app --reload
 Then open `http://127.0.0.1:8000`. API documentation remains available at
 `/docs`.
 
+### Writing workspace and inline diagnostics
+
+`/workspace` is a document-based writing surface: local storage with autosave and
+crash recovery, revision history, Markdown structure tools, an outline, and
+inline diagnostics that run **entirely on this computer**. Issues are marked over
+the exact characters; clicking a marker opens a suggestion next to it with the
+original passage, the proposed correction, an explanation and Accept/Dismiss.
+Accepting a correction validates the range against the current text first, so a
+stale suggestion is refused rather than applied to the wrong words.
+
+Useful to know:
+
+- 32 deterministic rules across spelling, grammar, punctuation, capitalisation,
+  sentence structure, clarity, concision, academic style and repetition.
+- Names, caste and community terms, place names, field vocabulary and survey
+  abbreviations are protected, so an unfamiliar word is never "corrected".
+- Three profiles (Academic Standard, Formal Academic Writing, Concise Academic
+  Writing) choose which optional **style** rules run; spelling and the reliable
+  grammar rules always run, and no profile ever edits your text.
+- The spelling dictionary is bundled (`pyspellchecker`, MIT — see
+  `THIRD_PARTY_NOTICES.md`), so nothing is sent anywhere and no API key, account
+  or internet connection is needed. The quick editor's optional AI pass remains a
+  separate, off-by-default switch.
+
+`docs/WINDOWS_DIAGNOSTICS_TEST.md` is the checklist for verifying this in the
+packaged Windows application.
+
 Optional model-assisted rewriting is enabled only when `LLM_API_KEY` is set.
 When the **AI enhance** switch is off, no passage is sent to an external model.
 When it is on, model output is rejected if it removes, changes, or introduces
@@ -249,6 +276,8 @@ python -m pip install -r requirements-research.txt
 
 PDF/DOCX extraction needs the optional dependencies. OCR for image-only scans is not bundled. A record returned by Crossref/OpenAlex is metadata, not proof it supports a claim. Zotero import is read-only. Private Web API imports require `ZOTERO_USER_ID` and `ZOTERO_API_KEY` in the local environment; never commit credentials.
 
+The page opens with your existing records already listed. Use **Add a reference** to save a record manually; it is written to the local SQLite database and remains available after restarting the app.
+
 ## Windows desktop package
 
 Build the native pywebview one-folder distribution on Windows 11 with Python 3.12 and Microsoft Edge WebView2 Runtime:
@@ -258,6 +287,16 @@ Build the native pywebview one-folder distribution on Windows 11 with Python 3.1
 ```
 
 The output is `dist\ScholarFlow\ScholarFlow.exe`. The app starts the existing FastAPI backend on loopback and stops it when its window closes. The GitHub Actions workflow builds an artifact on Windows, but the target PC still requires a manual launch/close test. See [Windows desktop and REA runbook](docs/REA_WINDOWS_RUNBOOK.md).
+
+### Verifying a build without opening a window
+
+The build script and the Windows workflow run a headless self-check after packaging:
+
+```powershell
+.\dist\ScholarFlow\ScholarFlow.exe --smoke-test --smoke-report smoke-test.log
+```
+
+It starts the same local server the window uses (without opening a window) and checks the bundled assets, all three editor profiles, the no-provider fallback, library health/settings, adding a reference and searching for it, CSL JSON import, TXT document indexing, passage search, the literature matrix, and that the database persists on disk. Results are written to the report file and printed when a console is attached. The run uses an isolated temporary data directory and prints only check names and HTTP status codes, so it never reads or logs your library or passages. Exit code `0` means every check passed.
 
 ## REA readiness and behavioral study
 

@@ -1,3 +1,7 @@
+import sys
+from pathlib import Path
+
+import desktop_app
 from desktop_app import allocate_local_listener, app_resource_dir, health_url
 
 
@@ -17,4 +21,85 @@ def test_desktop_health_url_is_loopback_only():
 
 def test_source_resource_root_contains_web_assets():
     root = app_resource_dir()
-    assert (root / "web" / "index.html").is_file()
+    for asset in ("index.html", "app.js", "styles.css", "library.html", "library.js", "library.css"):
+        assert (root / "web" / asset).is_file(), asset
+
+
+def test_smoke_checks_pass_against_live_server(tmp_path, monkeypatch):
+    """The headless checks used by the packaged ``--smoke-test`` run."""
+    monkeypatch.setenv("SCHOLARFLOW_DATA_DIR", str(tmp_path))
+    server = thread = listener = None
+    try:
+        server, thread, listener, base_url = desktop_app._start_server()
+        assert base_url.startswith("http://127.0.0.1:")
+        checks = desktop_app.run_smoke_checks(base_url, app_resource_dir())
+    finally:
+        desktop_app._stop_server(server, thread, listener)
+    failures = [name for name, passed, _ in checks if not passed]
+    assert failures == [], failures
+    names = {name for name, _, _ in checks}
+    assert any("editor rewrite profile=polish" in name for name in names)
+    assert any("library add reference" in name for name in names)
+    assert any("library passage search" in name for name in names)
+    # The packaged app must ship and exercise the writing workspace too.
+    assert any("bundled asset web/workspace.js" in name for name in names)
+    assert any("writing workspace page /workspace" in name for name in names)
+    assert any("writing workspace save document" in name for name in names)
+    assert any("writing workspace stale save refused" in name for name in names)
+    # Stage 2: diagnostics must be exercisable inside the packaged app.
+    assert any("workspace diagnostics endpoint" in name for name in names)
+    assert any("workspace diagnostics offsets are exact" in name for name in names)
+    assert any("workspace bundled dictionary works when frozen" in name for name in names)
+    assert any("workspace diagnostics separate errors from style" in name for name in names)
+    assert any("workspace diagnostics stay local" in name for name in names)
+    assert any("workspace personal dictionary suppresses a word" in name for name in names)
+
+
+def test_smoke_main_uses_isolated_data_and_never_imports_webview(tmp_path, monkeypatch):
+    monkeypatch.setenv("SCHOLARFLOW_DATA_DIR", str(tmp_path))
+    # A None entry makes any ``import webview`` fail: the smoke path must
+    # stay headless so CI can run the packaged exe without a window.
+    monkeypatch.setitem(sys.modules, "webview", None)
+    assert desktop_app.main([desktop_app.SMOKE_FLAG]) == 0
+    # The synthetic smoke records were written to the isolated data dir.
+    assert (tmp_path / "research-library.sqlite3").is_file()
+    name, passed, _detail = desktop_app._smoke_persistence_check()
+    assert passed, name
+
+
+def test_smoke_main_defaults_to_an_isolated_temp_data_dir(tmp_path, monkeypatch):
+    monkeypatch.delenv("SCHOLARFLOW_DATA_DIR", raising=False)
+    monkeypatch.setitem(sys.modules, "webview", None)
+    assert desktop_app.main([desktop_app.SMOKE_FLAG]) == 0
+
+
+def test_smoke_main_survives_a_windowed_build_with_no_stdout(tmp_path, monkeypatch):
+    """Regression: a PyInstaller console=False build has sys.stdout = None.
+
+    Printing then raises AttributeError, which previously turned a passing
+    smoke run into a failed CI step. The report file must still be written
+    and the exit code must still reflect real check results.
+    """
+    monkeypatch.setenv("SCHOLARFLOW_DATA_DIR", str(tmp_path))
+    monkeypatch.setitem(sys.modules, "webview", None)
+    monkeypatch.setattr(sys, "stdout", None)
+    monkeypatch.setattr(sys, "stderr", None)
+    report = tmp_path / "logs" / "smoke-test.log"
+    exit_code = desktop_app.main(["--smoke-test", "--smoke-report", str(report)])
+    assert exit_code == 0
+    assert sys.stdout is not None, "streams must be restored so logging cannot crash"
+    assert sys.stderr is not None
+    text = report.read_text(encoding="utf-8")
+    assert "SMOKE RESULT: PASS" in text
+    assert "SMOKE FAIL" not in text
+    assert "library add reference" in text
+    assert "writing workspace save document" in text
+    assert "writing workspace database persisted to disk" in text
+    assert "workspace diagnostics endpoint" in text
+    assert "workspace bundled dictionary works when frozen" in text
+
+
+def test_smoke_report_path_defaults_inside_the_data_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("SCHOLARFLOW_DATA_DIR", str(tmp_path))
+    assert desktop_app.smoke_report_path() == tmp_path / "logs" / "smoke-test.log"
+    assert desktop_app.smoke_report_path("/elsewhere/report.log") == Path("/elsewhere/report.log")

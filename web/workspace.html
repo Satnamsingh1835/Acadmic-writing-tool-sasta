@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="ScholarFlow writing workspace: a local, document-based academic editor with reviewable suggestions.">
+  <title>ScholarFlow Writing Workspace</title>
+  <link rel="stylesheet" href="/assets/workspace.css">
+  <script src="/assets/workspace.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-left">
+      <a class="brand" href="/">ScholarFlow</a>
+      <span class="subtitle">Writing workspace</span>
+    </div>
+    <div class="topbar-right">
+      <span class="save-state" id="save-state" role="status">Ready</span>
+      <a class="nav-link" href="/library">Research library</a>
+      <a class="nav-link" href="/">Quick editor</a>
+      <a class="nav-link" href="/docs" target="_blank" rel="noreferrer">API docs</a>
+    </div>
+  </header>
+
+  <div class="banner-stack" aria-live="polite">
+
+    <div class="banner is-error" id="error-banner" hidden>
+      <span id="error-message"></span>
+      <button type="button" class="banner-action" id="retry-button">Retry</button>
+      <button type="button" class="banner-action" id="dismiss-error">Dismiss</button>
+    </div>
+    <div class="banner is-warning" id="recovery-banner" hidden>
+      <span id="recovery-message">Unsaved changes from a previous session were found for this document.</span>
+      <button type="button" class="banner-action" id="recover-button">Recover</button>
+      <button type="button" class="banner-action" id="discard-recovery">Discard them</button>
+    </div>
+    <div class="banner is-warning" id="conflict-banner" hidden>
+      <span>This document changed elsewhere (another window or tab). Your version is still on screen.</span>
+      <button type="button" class="banner-action" id="conflict-reload">Load the stored version</button>
+      <button type="button" class="banner-action" id="conflict-overwrite">Keep mine and save</button>
+    </div>
+    <div class="banner is-info" id="status-banner" hidden><span id="status-message"></span></div>
+  </div>
+
+  <div class="toolbar" role="toolbar" aria-label="Document actions">
+    <button type="button" id="new-document">New document</button>
+    <button type="button" id="save-document">Save <kbd>Ctrl+S</kbd></button>
+    <label class="inline-field">Profile
+      <select id="profile">
+        <option value="standard">Academic standard</option>
+        <option value="polish">Concise academic writing</option>
+        <option value="conservative">Formal academic writing (minimal edits)</option>
+      </select>
+    </label>
+    <button type="button" id="refine-selection" class="primary">Refine selection <kbd>Ctrl+Enter</kbd></button>
+    <span class="toolbar-sep" aria-hidden="true"></span>
+    <button type="button" id="fmt-h1" title="Heading 1 (Ctrl+1)">H1</button>
+    <button type="button" id="fmt-h2" title="Heading 2 (Ctrl+2)">H2</button>
+    <button type="button" id="fmt-h3" title="Heading 3 (Ctrl+3)">H3</button>
+    <button type="button" id="fmt-bold" title="Bold (Ctrl+B)"><strong>B</strong></button>
+    <button type="button" id="fmt-italic" title="Italic (Ctrl+I)"><em>I</em></button>
+    <button type="button" id="fmt-bullet" title="Bulleted list (Ctrl+Shift+8)">• List</button>
+    <button type="button" id="fmt-number" title="Numbered list (Ctrl+Shift+7)">1. List</button>
+    <button type="button" id="fmt-quote" title="Block quote">❝ Quote</button>
+    <span class="toolbar-sep" aria-hidden="true"></span>
+    <button type="button" id="undo" title="Undo (Ctrl+Z)">Undo</button>
+    <button type="button" id="redo" title="Redo (Ctrl+Y)">Redo</button>
+  </div>
+
+  <main class="workspace">
+    <aside class="panel sidebar" aria-label="Documents">
+      <h2>Documents</h2>
+      <label class="field">
+        <span>Filter by text</span>
+        <input id="document-search" type="search" maxlength="200" placeholder="title or content">
+      </label>
+      <div class="list" id="document-list" role="list"></div>
+      <p class="hint" id="storage-note"></p>
+    </aside>
+
+    <section class="editor-column">
+      <label class="field title-field">
+        <span>Document title</span>
+        <input id="doc-title" maxlength="300" placeholder="Untitled document">
+      </label>
+      <div class="editor-shell" id="editor-shell">
+        <div class="marker-layer" id="marker-layer" role="group"
+             aria-label="Diagnostic markers: use the arrow keys to move between findings and Enter to review one"></div>
+        <div class="marker-mirror" id="marker-mirror" aria-hidden="true"></div>
+        <textarea id="editor" spellcheck="false" aria-label="Document text"
+          aria-describedby="diagnostics-summary"
+          placeholder="Write or paste your paper here. Markdown headings (# , ## , ### ), lists and quotes are supported."></textarea>
+      </div>
+
+      <section class="review-card" id="review-card" hidden aria-label="Suggestion review">
+        <header>
+          <h3 id="review-heading">Suggested revision</h3>
+          <span class="badge" id="review-badge">Review</span>
+        </header>
+        <div class="review-grid">
+          <div>
+            <h4>Your text</h4>
+            <blockquote id="review-original"></blockquote>
+          </div>
+          <div>
+            <h4>Proposed correction</h4>
+            <blockquote id="review-proposal"></blockquote>
+          </div>
+        </div>
+        <p class="review-meta" id="review-meta"></p>
+        <p class="review-note" id="review-note"></p>
+        <div class="review-actions">
+          <button type="button" id="review-accept" class="primary">Accept</button>
+          <button type="button" id="review-dismiss">Dismiss</button>
+          <button type="button" id="review-copy">Copy proposal</button>
+        </div>
+      </section>
+
+      <section class="review-card diagnostic-card" id="suggestion-card" hidden
+               aria-label="Diagnostic suggestion" role="dialog">
+        <header>
+          <h3 id="suggestion-heading">Suggestion</h3>
+          <span class="badge" id="suggestion-badge"></span>
+        </header>
+        <div class="review-grid">
+          <div>
+            <h4>Your text</h4>
+            <blockquote id="suggestion-original"></blockquote>
+          </div>
+          <div>
+            <h4 id="suggestion-proposal-heading">Proposed correction</h4>
+            <blockquote id="suggestion-proposal"></blockquote>
+          </div>
+        </div>
+        <p class="review-meta" id="suggestion-meta"></p>
+        <p class="review-note" id="suggestion-explanation"></p>
+        <div class="alternatives" id="suggestion-alternatives" role="group"
+             aria-label="Alternative corrections"></div>
+        <p class="review-note is-warning" id="suggestion-blocked" hidden></p>
+        <div class="review-actions">
+          <button type="button" id="suggestion-accept" class="primary">Accept</button>
+          <button type="button" id="suggestion-dismiss">Dismiss</button>
+          <button type="button" id="suggestion-dictionary" hidden>Add to dictionary</button>
+          <button type="button" id="suggestion-close">Close</button>
+        </div>
+      </section>
+
+      <footer class="statusbar">
+        <span id="word-count">0 words</span>
+        <span id="char-count">0 characters</span>
+        <span id="selection-count">No selection</span>
+        <span id="cursor-position">Line 1, column 1</span>
+        <span id="reading-time">0 min read</span>
+        <span id="last-saved">Not saved yet</span>
+      </footer>
+    </section>
+
+    <aside class="panel inspector" aria-label="Diagnostics, outline and history">
+      <h2 id="diagnostics-title">Diagnostics</h2>
+      <p class="diagnostics-summary" id="diagnostics-summary" role="status" aria-live="polite">
+        No document open.
+      </p>
+      <p class="diagnostics-total" id="diagnostics-total" role="status" aria-live="polite" hidden></p>
+      <p class="diagnostics-profile" id="diagnostics-profile"></p>
+      <div class="filter-row" role="group" aria-label="Filter findings">
+        <button type="button" id="filter-all" aria-pressed="true">All</button>
+        <button type="button" id="filter-error" aria-pressed="false">Errors only</button>
+        <button type="button" id="filter-style" aria-pressed="false">Style options only</button>
+      </div>
+      <div class="finding-nav" role="group" aria-label="Move between findings">
+        <button type="button" id="finding-previous" title="Previous finding (Alt+ArrowUp)">Previous</button>
+        <button type="button" id="finding-next" title="Next finding (Alt+ArrowDown)">Next</button>
+        <button type="button" id="finding-recheck" title="Re-check now">Re-check</button>
+      </div>
+      <div class="diagnostics-list" id="diagnostics-list" aria-label="Findings by category"></div>
+      <p class="hint" id="diagnostics-empty">Open a document to see diagnostics.</p>
+      <p class="hint" id="diagnostics-metrics"></p>
+      <p class="hint" id="diagnostics-privacy">Local checks only: the rules and the dictionary run on this computer, and no text is sent anywhere.</p>
+      <details class="dictionary-box" id="dictionary-box">
+        <summary>Personal dictionary (<span id="dictionary-count">0</span>)</summary>
+        <p class="hint">Words here are never flagged. Add a word from a spelling suggestion, or remove one below.</p>
+        <div class="dictionary-words" id="dictionary-words"></div>
+      </details>
+      <h2>Outline</h2>
+      <div class="outline" id="outline"></div>
+      <h2>History</h2>
+      <div class="list" id="history"></div>
+      <p class="hint">Restoring a revision keeps the current text in the history, so a rollback is reversible.</p>
+    </aside>
+  </main>
+
+  <footer class="page-footer">
+    <p><strong>Local by default.</strong> Documents are stored on this computer. Diagnostics and refining use the deterministic local engine and a bundled dictionary; no text is sent to an external provider, and no AI provider is required.</p>
+  </footer>
+</body>
+</html>

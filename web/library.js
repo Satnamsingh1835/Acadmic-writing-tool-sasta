@@ -56,24 +56,7 @@ function renderWorkList(container, records) {
   });
 }
 
-async function loadHealth() {
-  try {
-    const health = await request("/api/library/health");
-    statusNode.textContent = "Local database ready · " + health.work_count + " records · " +
-      health.document_count + " indexed documents · FTS5 " + (health.fts5_available ? "available" : "fallback search");
-    const settings = await request("/api/library/settings");
-    byId("offline").checked = !!settings.offline;
-    byId("crossref-enabled").checked = !!settings.crossref_enabled;
-    byId("openalex-enabled").checked = !!settings.openalex_enabled;
-    await loadMatrix();
-  } catch (error) {
-    statusNode.textContent = "Library unavailable: " + error.message;
-    statusNode.classList.add("error");
-  }
-}
-
-byId("library-search").addEventListener("submit", async (event) => {
-  event.preventDefault();
+async function searchLibrary() {
   const params = new URLSearchParams();
   const values = {
     q: byId("query").value.trim(),
@@ -90,6 +73,59 @@ byId("library-search").addEventListener("submit", async (event) => {
     renderWorkList(byId("library-results"), result.results || []);
   } catch (error) {
     byId("library-results").textContent = "Search failed: " + error.message;
+  }
+}
+
+async function loadHealth() {
+  try {
+    const health = await request("/api/library/health");
+    statusNode.textContent = "Local database ready · " + health.work_count + " records · " +
+      health.document_count + " indexed documents · FTS5 " + (health.fts5_available ? "available" : "fallback search");
+    const settings = await request("/api/library/settings");
+    byId("offline").checked = !!settings.offline;
+    byId("crossref-enabled").checked = !!settings.crossref_enabled;
+    byId("openalex-enabled").checked = !!settings.openalex_enabled;
+    await loadMatrix();
+    // Show existing records immediately so a reopened library is not
+    // mistaken for an empty one; the search form still re-filters them.
+    await searchLibrary();
+  } catch (error) {
+    statusNode.textContent = "Library unavailable: " + error.message;
+    statusNode.classList.add("error");
+  }
+}
+
+byId("library-search").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await searchLibrary();
+});
+
+byId("add-work-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const resultNode = byId("add-work-result");
+  const title = byId("add-title").value.trim();
+  if (!title) { resultNode.textContent = "Add a title before saving the reference."; return; }
+  const record = {
+    title,
+    authors: byId("add-authors").value.split(",").map((name) => name.trim()).filter(Boolean),
+    year: byId("add-year").value ? Number(byId("add-year").value) : null,
+    item_type: byId("add-type").value,
+    publication: byId("add-publication").value.trim(),
+    doi: byId("add-doi").value.trim(),
+    url: byId("add-url").value.trim(),
+    abstract: byId("add-abstract").value.trim(),
+    source: "manual",
+  };
+  resultNode.textContent = "Saving reference…";
+  try {
+    const result = await request("/api/library/work", { method: "POST", body: JSON.stringify({ record }) });
+    resultNode.textContent = result.duplicate
+      ? "That reference already exists in your library (ID: " + result.id + ")."
+      : "Reference saved locally (ID: " + result.id + "). It will remain after restarting ScholarFlow.";
+    if (!result.duplicate) byId("add-work-form").reset();
+    await loadHealth();
+  } catch (error) {
+    resultNode.textContent = "Could not save the reference: " + error.message;
   }
 });
 

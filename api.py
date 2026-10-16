@@ -6,9 +6,10 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from research_library.store import ResearchLibrary, default_data_dir
@@ -18,6 +19,23 @@ from research_library.importers import import_csl_records
 from research_library.zotero import ZoteroConnectionError, import_zotero_items
 
 from academic_engine import AcademicWritingEngine
+from document_store import (
+    REASON_AUTOSAVE,
+    REASON_MANUAL,
+    DocumentConflictError,
+    DocumentNotFoundError,
+    DocumentStore,
+    DocumentValidationError,
+)
+from diagnostics import (
+    DEFAULT_PROFILE,
+    ENGINE_NAME,
+    ENGINE_VERSION,
+    MAX_DOCUMENT_CHARS,
+    RULESET_VERSION,
+    DiagnosticEngine,
+    PersonalDictionary,
+)
 from editor_service import AcademicEditorService
 
 MAX_TEXT_CHARS = int(os.getenv("MAX_TEXT_CHARS", "500000"))
@@ -30,6 +48,28 @@ app = FastAPI(
     title="Academic Literature Review Assistant API",
     version="2.1.0",
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Answer a rejected request with a message the server can always encode.
+
+    FastAPI's default handler echoes the offending input back to the client. A
+    lone surrogate — the low half of an emoji, as an ill-formed paste can produce
+    — cannot be encoded into that response at all, so a rejected save came back as
+    an internal server error. Naming the field is enough for the caller to act
+    on, and it never puts document text into an error response.
+    """
+    fields: list[str] = []
+    for error in exc.errors():
+        location = ".".join(str(part) for part in error.get("loc", ()) if part != "body")
+        if location and location not in fields:
+            fields.append(location)
+    detail = "That request was rejected by validation"
+    detail = f"{detail}: {', '.join(fields)}." if fields else f"{detail}."
+    return JSONResponse(status_code=422, content={"detail": detail})
+
+
 engine = AcademicWritingEngine()
 editor_service = AcademicEditorService(engine=engine)
 app.mount("/assets", StaticFiles(directory=WEB_DIR), name="assets")
@@ -185,6 +225,232 @@ async def review_file(
         profile,
         include_refined_text,
     )
+
+
+# Writing workspace. Documents are stored locally in SQLite; the service never
+# contacts an external provider on its own.
+_document_store: DocumentStore | None = None
+_document_store_path: str | None = None
+
+
+def get_document_store() -> DocumentStore:
+    global _document_store, _document_store_path
+    db_path = str(default_data_dir() / "writing-documents.sqlite3")
+    if _document_store is None or _document_store_path != db_path:
+        _document_store = DocumentStore(db_path)
+        _document_store_path = db_path
+    return _document_store
+
+
+class DocumentCreateRequest(BaseModel):
+    title: str = Field(default="", max_length=300)
+    text: str = Field(default="", max_length=2_000_000)
+
+
+class DocumentSaveRequest(BaseModel):
+    title: Optional[str] = Field(default=None, max_length=300)
+    text: Optional[str] = Field(default=None, max_length=2_000_000)
+    expected_revision: Optional[int] = Field(default=None, ge=1)
+    reason: str = Field(default=REASON_MANUAL, max_length=32)
+
+
+@app.get("/workspace", include_in_schema=False)
+def writing_workspace_home():
+    return FileResponse(WEB_DIR / "workspace.html")
+
+
+@app.get("/api/documents")
+def workspace_list_documents(q: str = "", limit: int = 200):
+    if len(q) > 200:
+        raise HTTPException(422, "Search text must be 200 characters or fewer.")
+    store = get_document_store()
+    return {"documents": store.list(query=q, limit=max(1, min(limit, 500)))}
+
+
+@app.post("/api/documents")
+def workspace_create_document(request: DocumentCreateRequest):
+    try:
+        return get_document_store().create(title=request.title or None, text=request.text)
+    except DocumentValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/documents/{document_id}")
+def workspace_get_document(document_id: str):
+    try:
+        return get_document_store().get(document_id)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.put("/api/documents/{document_id}")
+def workspace_save_document(document_id: str, request: DocumentSaveRequest):
+    if request.reason not in {REASON_MANUAL, REASON_AUTOSAVE}:
+        raise HTTPException(400, "Clients may save with reason 'manual' or 'autosave'.")
+    store = get_document_store()
+    try:
+        return store.save(
+            document_id,
+            title=request.title,
+            text=request.text,
+            expected_revision=request.expected_revision,
+            reason=request.reason,
+        )
+    except DocumentNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except DocumentConflictError as exc:
+        raise HTTPException(
+            409,
+            "This document was changed in another window. Reload it before saving.",
+        ) from exc
+    except DocumentValidationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.delete("/api/documents/{document_id}")
+def workspace_delete_document(document_id: str):
+    try:
+        document = get_document_store().delete(document_id)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"id": document["id"], "archived": document["archived"]}
+
+
+@app.post("/api/documents/{document_id}/restore")
+def workspace_restore_document(document_id: str):
+    try:
+        return get_document_store().restore_document(document_id)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.get("/api/documents/{document_id}/revisions")
+def workspace_document_revisions(document_id: str):
+    try:
+        revisions = get_document_store().revisions(document_id)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"revisions": revisions}
+
+
+@app.post("/api/documents/{document_id}/revisions/{revision}/restore")
+def workspace_restore_document_revision(document_id: str, revision: int):
+    try:
+        return get_document_store().restore_revision(document_id, revision)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+# Inline diagnostics for the writing workspace. Everything runs locally: the
+# rules are deterministic, the dictionary ships with the application, and no
+# document text is logged or sent anywhere.
+class DiagnosticsRequest(BaseModel):
+    # The length limit is enforced by the engine on purpose: a pydantic
+    # max_length error echoes a snippet of the document back to the client,
+    # which would put academic text into an error response.
+    text: str = Field(default="")
+    document_id: Optional[str] = None
+    revision: Optional[int] = None
+    categories: Optional[list[str]] = None
+    # A profile name is short and fixed, so validating it here is safe: an
+    # invalid one never echoes document text. The engine still resolves aliases.
+    profile: Optional[str] = Field(default=None, max_length=32)
+
+
+class DictionaryRequest(BaseModel):
+    word: str = Field(min_length=1, max_length=64)
+
+
+_personal_dictionary: PersonalDictionary | None = None
+_personal_dictionary_path: str | None = None
+_diagnostics_engine: DiagnosticEngine | None = None
+_diagnostics_engine_key: tuple[str, ...] | None = None
+
+
+def get_personal_dictionary() -> PersonalDictionary:
+    global _personal_dictionary, _personal_dictionary_path
+    path = str(default_data_dir() / "writing-dictionary.json")
+    if _personal_dictionary is None or _personal_dictionary_path != path:
+        _personal_dictionary = PersonalDictionary(path)
+        _personal_dictionary_path = path
+    return _personal_dictionary
+
+
+def get_diagnostics_engine() -> DiagnosticEngine:
+    """One engine per personal dictionary, so a new word takes effect at once."""
+    global _diagnostics_engine, _diagnostics_engine_key
+    words = tuple(get_personal_dictionary().words())
+    if _diagnostics_engine is None or _diagnostics_engine_key != words:
+        _diagnostics_engine = DiagnosticEngine(words)
+        _diagnostics_engine_key = words
+    return _diagnostics_engine
+
+
+@app.get("/api/workspace/diagnostics/categories")
+def workspace_diagnostic_categories():
+    return {
+        "categories": DiagnosticEngine.categories(),
+        "groups": DiagnosticEngine.groups(),
+        "profiles": DiagnosticEngine.profiles(),
+        "default_profile": DEFAULT_PROFILE,
+        "limits": {"max_characters": MAX_DOCUMENT_CHARS},
+        "engine": {
+            "name": ENGINE_NAME,
+            "version": ENGINE_VERSION,
+            "ruleset_version": RULESET_VERSION,
+        },
+        "privacy": (
+            "Diagnostics run locally with a bundled dictionary and deterministic "
+            "rules. No document text leaves this computer and nothing is logged."
+        ),
+    }
+
+
+@app.get("/api/workspace/diagnostics/profiles")
+def workspace_diagnostic_profiles():
+    return {
+        "profiles": DiagnosticEngine.profiles(),
+        "default_profile": DEFAULT_PROFILE,
+    }
+
+
+@app.post("/api/workspace/diagnostics")
+def workspace_diagnostics(request: DiagnosticsRequest):
+    try:
+        report = get_diagnostics_engine().analyse(
+            request.text,
+            categories=request.categories,
+            profile=request.profile,
+            document_id=request.document_id,
+            revision=request.revision,
+        )
+    except ValueError as exc:
+        # Messages describe the request, never the document contents.
+        raise HTTPException(422, str(exc)) from exc
+    return report
+
+
+@app.get("/api/workspace/dictionary")
+def workspace_dictionary():
+    return {"words": get_personal_dictionary().words()}
+
+
+@app.post("/api/workspace/dictionary")
+def workspace_dictionary_add(request: DictionaryRequest):
+    try:
+        words = get_personal_dictionary().add(request.word)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"words": words}
+
+
+@app.delete("/api/workspace/dictionary/{word}")
+def workspace_dictionary_remove(word: str):
+    try:
+        words = get_personal_dictionary().remove(word)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"words": words}
 
 
 # Local research-library endpoints. They operate on a user-local SQLite database;
